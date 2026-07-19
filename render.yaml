@@ -12,3 +12,15 @@ services:
         value: 22.16.0
       - key: FRONTEND_ORIGIN
         value: https://sprskisubtitles.netlify.app
+      - key: S3_REGION
+        value: auto
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: PUBLIC_MEDIA_BASE_URL
+        sync: false

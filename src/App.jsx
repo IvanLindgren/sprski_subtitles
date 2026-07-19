@@ -11,6 +11,7 @@ import {
   Film,
   FolderOpen,
   Gauge,
+  Globe2,
   KeyRound,
   LoaderCircle,
   Maximize2,
@@ -19,7 +20,9 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   Sparkles,
+  Tag,
   Trash2,
   Upload,
   WandSparkles,
@@ -29,7 +32,9 @@ import { deleteVideoBlob, getVideoBlob, saveVideoBlob } from './storage';
 import { cleanWord, downloadText, formatClock, makeSrt, makeVtt } from './subtitles';
 
 const PROJECTS_KEY = 'recnik-projects-v1';
+const API_KEY_STORAGE_KEY = 'recnik-groq-key';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
 
 function apiUrl(pathname) {
   return `${API_BASE_URL}${pathname}`;
@@ -51,6 +56,17 @@ function loadProjects() {
   } catch {
     return [];
   }
+}
+
+function loadApiKey() {
+  const persistentKey = localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+  if (persistentKey) return persistentKey;
+  const previousSessionKey = sessionStorage.getItem(API_KEY_STORAGE_KEY) || '';
+  if (previousSessionKey) {
+    localStorage.setItem(API_KEY_STORAGE_KEY, previousSessionKey);
+    sessionStorage.removeItem(API_KEY_STORAGE_KEY);
+  }
+  return previousSessionKey;
 }
 
 function fileStem(filename = 'video') {
@@ -109,7 +125,7 @@ function BrandMark() {
   );
 }
 
-function Header({ inProject, onHome, onSettings }) {
+function Header({ inProject, inLibrary, onHome, onLibrary, onSettings }) {
   return (
     <header className="site-header">
       <button className="brand" onClick={onHome} aria-label="На главную">
@@ -117,9 +133,14 @@ function Header({ inProject, onHome, onSettings }) {
         <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>српски видео-речник</small></span>
       </button>
       <div className="header-actions">
-        {inProject && (
+        {(inProject || inLibrary) && (
           <button className="text-button" onClick={onHome}>
             <FolderOpen size={17} /> Мои видео
+          </button>
+        )}
+        {!inLibrary && (
+          <button className="text-button library-link" onClick={onLibrary}>
+            <Globe2 size={17} /> Публичная библиотека
           </button>
         )}
         <button className="icon-button" onClick={onSettings} aria-label="Настройки API">
@@ -316,7 +337,7 @@ function WordToken({ value, added, onAdd }) {
   );
 }
 
-function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSearch, onDownloadVtt, onDownloadSrt, onRetranscribe, processing }) {
+function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSearch, onDownloadVtt, onDownloadSrt, onRetranscribe, onPublish, processing }) {
   const transcript = project.transcript || [];
   const saved = useMemo(() => new Set((project.glossary || []).map((item) => item.word)), [project.glossary]);
   const visible = transcript.filter((segment) => segment.text.toLocaleLowerCase('sr').includes(search.toLocaleLowerCase('sr')));
@@ -327,6 +348,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
         <div><span className="panel-eyebrow">ТРАНСКРИПТ</span><h2>Текст видео</h2></div>
         {transcript.length > 0 && (
           <div className="panel-actions">
+            <button className="publish-action" onClick={onPublish} disabled={processing === 'publish'} title="Опубликовать анонимно"><Globe2 size={15} /> Опубликовать</button>
             <button onClick={onRetranscribe} disabled={processing === 'transcribe'} title="Распознать заново"><Sparkles size={15} /> Повторить</button>
             <button onClick={onDownloadVtt}><Download size={15} /> VTT</button>
             <button onClick={onDownloadSrt}><Download size={15} /> SRT</button>
@@ -422,7 +444,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
   );
 }
 
-function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscribe, onBurn, processing, notify, transcriptionError, onDismissError }) {
+function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
@@ -484,6 +506,7 @@ function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscrib
             onDownloadVtt={() => downloadText(makeVtt(project.transcript), `${filename}-sr.vtt`, 'text/vtt;charset=utf-8')}
             onDownloadSrt={() => downloadText(makeSrt(project.transcript), `${filename}-sr.srt`)}
             onRetranscribe={onTranscribe}
+            onPublish={onPublish}
             processing={processing}
           />
         </div>
@@ -500,6 +523,181 @@ function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscrib
   );
 }
 
+function PublicLibrary({ refreshToken, notify }) {
+  const [items, setItems] = useState([]);
+  const [category, setCategory] = useState('все');
+  const [selected, setSelected] = useState(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [configured, setConfigured] = useState(true);
+  const [error, setError] = useState('');
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) {
+        if (!cancelled) {
+          setError('Публичная библиотека станет доступна после подключения Render через переменную VITE_API_BASE_URL в Netlify.');
+          setLoading(false);
+        }
+        return;
+      }
+      setLoading(true);
+      setError('');
+      try {
+        const response = await fetch(apiUrl('/api/public/videos'));
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Не удалось открыть публичную библиотеку.');
+        if (!cancelled) {
+          setConfigured(payload.configured !== false);
+          setItems(Array.isArray(payload.items) ? payload.items : []);
+        }
+      } catch (loadError) {
+        if (!cancelled) setError(loadError.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [refreshToken]);
+
+  const openPublication = async (id) => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(apiUrl(`/api/public/videos/${id}`));
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось открыть видео.');
+      setSelected(payload);
+      setCurrentTime(0);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (openError) {
+      setError(openError.message);
+      notify(openError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const seek = (time) => {
+    setCurrentTime(time);
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+      videoRef.current.play().catch(() => {});
+    }
+  };
+
+  if (selected) {
+    const activeSegment = selected.segments?.find((segment) => currentTime >= segment.start && currentTime < segment.end);
+    return (
+      <main className="public-library public-viewer">
+        <div className="library-heading">
+          <button className="library-back" onClick={() => setSelected(null)}><ArrowLeft size={17} /> Ко всем публикациям</button>
+          <span className="category-badge"><Tag size={13} /> {selected.category}</span>
+          <h1>{selected.title}</h1>
+          <p>{selected.description || 'Сербское видео опубликовано анонимно вместе с готовыми синхронными субтитрами.'}</p>
+        </div>
+        <section className="public-player-layout">
+          <div className="public-video-shell">
+            <video ref={videoRef} src={selected.videoUrl} controls playsInline onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} />
+            {activeSegment && <div className="subtitle-overlay">{activeSegment.text}</div>}
+          </div>
+          <div className="public-transcript">
+            <div className="public-transcript-heading"><span>СЕРБСКИЕ СУБТИТРЫ</span><h2>Текст видео</h2></div>
+            <div className="public-segments">
+              {(selected.segments || []).map((segment) => (
+                <button key={segment.id} className={currentTime >= segment.start && currentTime < segment.end ? 'is-active' : ''} onClick={() => seek(segment.start)}>
+                  <time>{formatClock(segment.start)}</time><span>{segment.text}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  const visibleItems = category === 'все' ? items : items.filter((item) => item.category === category);
+  return (
+    <main className="public-library">
+      <PatternBand />
+      <section className="library-intro">
+        <div>
+          <span className="panel-eyebrow">АНОНИМНЫЕ ПУБЛИКАЦИИ</span>
+          <h1>Сербское видео с готовыми субтитрами</h1>
+          <p>Здесь собраны видео, которыми пользователи решили поделиться после распознавания речи. Имя автора не запрашивается и не публикуется, а категория помогает быстро найти фильм, мультфильм, блог или учебный материал.</p>
+        </div>
+        <img src="/assets/citavuk-guide.webp" alt="Читавук показывает публичную библиотеку" />
+      </section>
+      <div className="category-filter" aria-label="Фильтр по категории">
+        {PUBLIC_CATEGORIES.map((item) => <button key={item} className={category === item ? 'is-active' : ''} onClick={() => setCategory(item)}>{item}</button>)}
+      </div>
+      {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>Читавук открывает библиотеку…</p></div>}
+      {!loading && error && <div className="library-state library-state--error"><Globe2 size={28} /><p>{error}</p></div>}
+      {!loading && !error && !configured && <div className="library-state"><Globe2 size={28} /><p>Публичное хранилище ещё не подключено. После добавления параметров Cloudflare R2 в Render здесь появятся анонимные публикации.</p></div>}
+      {!loading && !error && configured && visibleItems.length === 0 && <div className="library-state"><Film size={28} /><p>{category === 'все' ? 'Пока здесь нет видео. Первую публикацию можно создать из проекта с готовыми субтитрами.' : `В категории «${category}» пока нет видео.`}</p></div>}
+      {!loading && !error && visibleItems.length > 0 && (
+        <section className="publication-grid">
+          {visibleItems.map((item) => (
+            <button className="publication-card" key={item.id} onClick={() => openPublication(item.id)}>
+              <div className="publication-cover"><Film size={32} /><span>{item.category}</span></div>
+              <div className="publication-copy">
+                <h2>{item.title}</h2>
+                <p>{item.description || 'Сербское видео с распознанными субтитрами.'}</p>
+                <small>{item.segmentsCount} {pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}, {formatClock(item.duration)}</small>
+              </div>
+              <ChevronRight size={19} />
+            </button>
+          ))}
+        </section>
+      )}
+    </main>
+  );
+}
+
+function PublishModal({ project, processing, onSubmit, onClose }) {
+  const [title, setTitle] = useState(project.name.replace(/\.[^.]+$/, ''));
+  const [category, setCategory] = useState('фильм');
+  const [description, setDescription] = useState('');
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <form className="publish-modal" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit({ title: title.trim(), category, description: description.trim(), rightsConfirmed });
+      }}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Закрыть публикацию"><X size={20} /></button>
+        <div className="modal-icon"><Globe2 size={24} /></div>
+        <span className="modal-kicker">ПУБЛИЧНАЯ БИБЛИОТЕКА</span>
+        <h2>Опубликовать анонимно</h2>
+        <p>Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Имя, ключ Groq и данные личного словаря не передаются и не публикуются.</p>
+        <label>НАЗВАНИЕ
+          <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} required />
+        </label>
+        <label>КАТЕГОРИЯ
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            {PUBLIC_CATEGORIES.slice(1).map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>ОПИСАНИЕ
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={600} rows={3} placeholder="Коротко расскажите, что находится в видео" />
+        </label>
+        <label className="rights-confirmation">
+          <input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} />
+          <span><ShieldCheck size={18} /> Я подтверждаю, что имею право публично разместить это видео и понимаю, что публикация будет доступна по всему интернету.</span>
+        </label>
+        <button className="primary-button publish-submit" disabled={processing === 'publish' || !rightsConfirmed || title.trim().length < 2}>
+          {processing === 'publish' ? <LoaderCircle className="spin" size={18} /> : <Globe2 size={18} />}
+          {processing === 'publish' ? 'Загружаем публикацию…' : 'Опубликовать видео'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function SettingsModal({ value, onSave, onClose }) {
   const [key, setKey] = useState(value);
   return (
@@ -509,7 +707,7 @@ function SettingsModal({ value, onSave, onClose }) {
         <div className="modal-icon"><KeyRound size={24} /></div>
         <span className="modal-kicker">ПОДКЛЮЧЕНИЕ</span>
         <h2>Ключ Groq API</h2>
-        <p>Он нужен только для распознавания речи. Получите бесплатный ключ в Groq Console, скопируйте его и вставьте ниже.</p>
+        <p>Он нужен только для распознавания речи. Получите бесплатный ключ в Groq Console, скопируйте его и вставьте ниже. Ключ сохранится в локальном хранилище этого браузера, переживёт закрытие вкладки и останется на устройстве, пока вы не удалите его здесь.</p>
         <p className="key-guide-copy">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, после чего скопируйте созданный ключ, который начинается с gsk_, и вставьте его в поле.</p>
         <label>API KEY
           <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="gsk_••••••••••••••••" autoFocus />
@@ -537,7 +735,7 @@ function WelcomeModal({ value, onSave, onClose }) {
           <span className="modal-kicker">ПЕРЕД НАЧАЛОМ</span>
           <h2>Познакомьтесь: Читавук</h2>
           <p>Он поможет превратить сербскую речь в субтитры. Для распознавания нужен бесплатный ключ Groq.</p>
-          <p className="welcome-guide">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, скопируйте созданный ключ с началом gsk_ и вставьте его в поле. Ключ сохранится только до закрытия вкладки.</p>
+          <p className="welcome-guide">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, скопируйте созданный ключ с началом gsk_ и вставьте его в поле. Ключ сохранится локально в этом браузере и не исчезнет после закрытия вкладки.</p>
           <div className="welcome-limits">
             <p>Бесплатный тариф включает 2 000 запросов в сутки и позволяет распознать до двух часов аудио в час или до восьми часов в сутки. После сжатия аудиофайл должен занимать не более 25 МБ.</p>
           </div>
@@ -556,10 +754,12 @@ function WelcomeModal({ value, onSave, onClose }) {
 
 function ProcessingBanner({ kind }) {
   if (!kind) return null;
+  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : 'Распознаём сербскую речь';
+  const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : 'Извлекаем звук и расставляем таймкоды…';
   return (
     <div className="processing-banner">
       <LoaderCircle size={18} className="spin" />
-      <div><strong>{kind === 'burn' ? 'Создаём видео с субтитрами' : 'Распознаём сербскую речь'}</strong><span>{kind === 'burn' ? 'Это может занять несколько минут…' : 'Извлекаем звук и расставляем таймкоды…'}</span></div>
+      <div><strong>{title}</strong><span>{copy}</span></div>
     </div>
   );
 }
@@ -567,11 +767,14 @@ function ProcessingBanner({ kind }) {
 export default function App() {
   const [projects, setProjects] = useState(loadProjects);
   const [activeId, setActiveId] = useState(null);
+  const [page, setPage] = useState('landing');
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
-  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem('recnik-groq-key') || '');
+  const [apiKey, setApiKey] = useState(loadApiKey);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(() => sessionStorage.getItem('recnik-welcome-seen') !== '1');
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [processing, setProcessing] = useState(null);
   const [transcriptionError, setTranscriptionError] = useState('');
   const [toast, setToast] = useState('');
@@ -622,6 +825,7 @@ export default function App() {
     };
     setProjects((current) => [project, ...current]);
     setActiveId(id);
+    setPage('landing');
     setCurrentMedia(file);
     try {
       await saveVideoBlob(id, file);
@@ -634,6 +838,7 @@ export default function App() {
     const existing = projects.find((project) => project.isDemo);
     if (existing) {
       setActiveId(existing.id);
+      setPage('landing');
       setCurrentMedia(null);
       return;
     }
@@ -652,6 +857,7 @@ export default function App() {
     };
     setProjects((current) => [project, ...current]);
     setActiveId(project.id);
+    setPage('landing');
     setCurrentMedia(null);
   };
 
@@ -659,6 +865,7 @@ export default function App() {
     const project = projects.find((item) => item.id === id);
     if (!project) return;
     setActiveId(id);
+    setPage('landing');
     if (project.isDemo) return setCurrentMedia(null);
     try {
       const blob = await getVideoBlob(id);
@@ -763,14 +970,57 @@ export default function App() {
     }
   };
 
+  const openPublish = () => {
+    if (activeProject?.isDemo) return notify('Пример проекта нельзя публиковать');
+    if (!activeProject?.transcript?.length) return notify('Сначала создайте субтитры');
+    setPublishOpen(true);
+  };
+
+  const publishVideo = async ({ title, category, description, rightsConfirmed }) => {
+    if (!rightsConfirmed) return notify('Подтвердите право на публичное размещение видео');
+    let file = videoFile;
+    if (!file && activeId) {
+      const blob = await getVideoBlob(activeId).catch(() => null);
+      if (blob) file = new File([blob], activeProject.name, { type: activeProject.type });
+    }
+    if (!file) return notify('Исходное видео не найдено в памяти браузера');
+    if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) return notify('Сначала подключите Render через VITE_API_BASE_URL в Netlify');
+
+    setProcessing('publish');
+    try {
+      const form = new FormData();
+      form.append('video', file, file.name);
+      form.append('title', title);
+      form.append('category', category);
+      form.append('description', description);
+      form.append('rightsConfirmed', String(rightsConfirmed));
+      form.append('transcript', JSON.stringify(activeProject.transcript));
+      const response = await fetch(apiUrl('/api/public/videos'), { method: 'POST', body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось опубликовать видео.');
+      setPublishOpen(false);
+      setLibraryRefresh((value) => value + 1);
+      setActiveId(null);
+      setCurrentMedia(null);
+      setPage('library');
+      notify('Видео анонимно опубликовано в общей библиотеке');
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
   const saveKey = (key) => {
     setApiKey(key);
-    if (key) sessionStorage.setItem('recnik-groq-key', key);
-    else sessionStorage.removeItem('recnik-groq-key');
+    if (key) localStorage.setItem(API_KEY_STORAGE_KEY, key);
+    else localStorage.removeItem(API_KEY_STORAGE_KEY);
+    sessionStorage.removeItem(API_KEY_STORAGE_KEY);
+    navigator.storage?.persist?.().catch(() => {});
     setSettingsOpen(false);
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
-    notify(key ? 'Ключ сохранён до закрытия вкладки' : 'Ключ удалён');
+    notify(key ? 'Ключ сохранён в этом браузере' : 'Ключ удалён');
   };
 
   const closeWelcome = () => {
@@ -781,11 +1031,18 @@ export default function App() {
   const goHome = () => {
     setActiveId(null);
     setCurrentMedia(null);
+    setPage('landing');
+  };
+
+  const openLibrary = () => {
+    setActiveId(null);
+    setCurrentMedia(null);
+    setPage('library');
   };
 
   return (
     <div className="app-shell">
-      <Header inProject={Boolean(activeProject)} onHome={goHome} onSettings={() => setSettingsOpen(true)} />
+      <Header inProject={Boolean(activeProject)} inLibrary={page === 'library'} onHome={goHome} onLibrary={openLibrary} onSettings={() => setSettingsOpen(true)} />
       {activeProject ? (
         <Workspace
           project={activeProject}
@@ -795,11 +1052,14 @@ export default function App() {
           onUpdate={updateProject}
           onTranscribe={transcribe}
           onBurn={burnVideo}
+          onPublish={openPublish}
           processing={processing}
           notify={notify}
           transcriptionError={transcriptionError}
           onDismissError={() => setTranscriptionError('')}
         />
+      ) : page === 'library' ? (
+        <PublicLibrary refreshToken={libraryRefresh} notify={notify} />
       ) : (
         <Landing projects={projects} onFile={createProject} onDemo={openDemo} onOpen={openProject} onDelete={deleteProject} />
       )}
@@ -811,6 +1071,7 @@ export default function App() {
       </footer>
       {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
       {welcomeOpen && <WelcomeModal value={apiKey} onSave={saveKey} onClose={closeWelcome} />}
+      {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
       <ProcessingBanner kind={processing} />
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
