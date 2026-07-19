@@ -261,6 +261,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:fo
 .transcribe-callout > div:nth-child(2) { display: grid; gap: 4px; flex: 1; }
 .transcribe-callout strong { font-size: 11px; }
 .transcribe-callout span { color: var(--muted); font-size: 9px; }
+.transcription-error { margin-top: 13px; border-left: 3px solid var(--red); background: #f7e5df; color: #6f2528; display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 11px 13px; }
+.transcription-error p { margin: 0; font-size: 9px; line-height: 1.6; }
+.transcription-error button { border: 0; background: none; color: inherit; cursor: pointer; padding: 1px; flex: 0 0 auto; }
 .primary-button { border: 0; background: var(--red); color: white; min-height: 40px; padding: 0 17px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-weight: 700; font-size: 10px; box-shadow: 3px 3px 0 var(--red-dark); transition: .15s; }
 .primary-button:hover { background: #b83836; transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--red-dark); }
 .primary-button:disabled { opacity: .65; cursor: wait; }

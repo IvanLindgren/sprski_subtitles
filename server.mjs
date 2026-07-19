@@ -42,16 +42,18 @@ function runFfmpeg(args, options = {}) {
   });
 }
 
-async function requestGroqTranscription(audio, apiKey, filename = 'speech.ogg') {
+async function requestGroqTranscription(audio, apiKey, filename = 'speech.ogg', options = {}) {
+  const model = options.model || 'whisper-large-v3';
   const form = new FormData();
   form.append('file', new Blob([audio], { type: 'audio/ogg' }), filename);
-  form.append('model', 'whisper-large-v3');
+  form.append('model', model);
   form.append('language', 'sr');
   form.append('response_format', 'verbose_json');
   form.append('temperature', '0');
-  form.append('prompt', 'Ово је видео на српском језику. Транскрибуј све изговорене речи од самог почетка, без прескакања увода. Задржи српску ћирилицу или латиницу како је изговорено.');
+  if (options.withPrompt !== false) {
+    form.append('prompt', 'Српски видео-садржај од самог почетка. Српска ћирилица или latinica.');
+  }
   form.append('timestamp_granularities[]', 'segment');
-  form.append('timestamp_granularities[]', 'word');
 
   const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
@@ -62,9 +64,26 @@ async function requestGroqTranscription(audio, apiKey, filename = 'speech.ogg') 
   if (!response.ok) {
     const error = new Error(payload?.error?.message || 'Groq не смог обработать аудио.');
     error.status = response.status;
+    error.provider = 'groq';
+    error.model = model;
     throw error;
   }
+  payload.model = model;
   return payload;
+}
+
+async function transcribeWithFallback(audio, apiKey, filename = 'speech.ogg') {
+  try {
+    return await requestGroqTranscription(audio, apiKey, filename);
+  } catch (error) {
+    if (error.status !== 400 || error.model !== 'whisper-large-v3') throw error;
+    const payload = await requestGroqTranscription(audio, apiKey, filename, {
+      model: 'whisper-large-v3-turbo',
+      withPrompt: false,
+    });
+    payload.used_fallback_model = true;
+    return payload;
+  }
 }
 
 app.post('/api/transcribe', upload.single('video'), async (req, res) => {
@@ -73,7 +92,7 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
   let tempDir;
 
   try {
-    if (!req.file) return res.status(400).json({ error: 'Видео не получено.' });
+    if (!req.file) return res.status(400).json({ error: 'Сервер не получил видеофайл. Проверьте, что сайт развёрнут как Web Service, а не как Static Site.', code: 'MISSING_VIDEO_FILE' });
     if (!apiKey) {
       return res.status(401).json({
         error: 'Добавьте GROQ_API_KEY на сервере или укажите ключ в настройках сайта.',
@@ -104,7 +123,7 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
       });
     }
 
-    const payload = await requestGroqTranscription(audio, apiKey);
+    const payload = await transcribeWithFallback(audio, apiKey);
 
     const firstStart = Number(payload.segments?.[0]?.start);
     if (Number.isFinite(firstStart) && firstStart > 2.5) {
@@ -120,7 +139,7 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
           '-b:a', '24k',
           introPath,
         ]);
-        const introPayload = await requestGroqTranscription(await readFile(introPath), apiKey, 'intro.ogg');
+        const introPayload = await transcribeWithFallback(await readFile(introPath), apiKey, 'intro.ogg');
         const recovered = (introPayload.segments || []).filter((segment) => (
           Number(segment.start) < firstStart - 0.2 && Number(segment.end) <= firstStart + 0.5
         ));
@@ -137,7 +156,12 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
     res.json(payload);
   } catch (error) {
     console.error(error);
-    res.status(error.status || 500).json({ error: error.message || 'Ошибка обработки видео.' });
+    res.status(error.status || 500).json({
+      error: error.message || 'Ошибка обработки видео.',
+      code: error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR',
+      provider: error.provider,
+      model: error.model,
+    });
   } finally {
     if (sourcePath) await rm(sourcePath, { force: true }).catch(() => {});
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -204,6 +228,12 @@ app.use((req, res, next) => {
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: 'Файл больше 500 МБ.' });
+  }
+  if (error instanceof multer.MulterError) {
+    return res.status(400).json({
+      error: `Не удалось принять видеофайл: ${error.message}`,
+      code: error.code || 'MULTIPART_UPLOAD_ERROR',
+    });
   }
   console.error(error);
   res.status(500).json({ error: 'Непредвиденная ошибка сервера.' });

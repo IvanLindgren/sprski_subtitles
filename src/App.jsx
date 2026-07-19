@@ -258,7 +258,7 @@ function DemoPlayer({ currentTime, onTime, activeSegment }) {
   );
 }
 
-function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSegment, onTranscribe, processing }) {
+function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSegment, onTranscribe, processing, transcriptionError, onDismissError }) {
   return (
     <section className="video-column">
       <div className="project-kicker"><span>РАЗБОР ВИДЕО</span><small>{project.isDemo ? 'пример проекта' : `${formatBytes(project.size)}, ${project.type || 'видео'}`}</small></div>
@@ -282,6 +282,12 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
             {processing === 'transcribe' ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={17} />}
             {processing === 'transcribe' ? 'Слушаем речь…' : 'Создать субтитры'}
           </button>
+        </div>
+      )}
+      {transcriptionError && (
+        <div className="transcription-error" role="alert">
+          <p>{transcriptionError}</p>
+          <button onClick={onDismissError} aria-label="Закрыть сообщение об ошибке"><X size={16} /></button>
         </div>
       )}
     </section>
@@ -411,7 +417,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
   );
 }
 
-function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscribe, onBurn, processing, notify }) {
+function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscribe, onBurn, processing, notify, transcriptionError, onDismissError }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
@@ -460,6 +466,8 @@ function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscrib
             activeSegment={activeSegment}
             onTranscribe={onTranscribe}
             processing={processing}
+            transcriptionError={transcriptionError}
+            onDismissError={onDismissError}
           />
           <TranscriptPanel
             project={project}
@@ -560,6 +568,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(() => sessionStorage.getItem('recnik-welcome-seen') !== '1');
   const [processing, setProcessing] = useState(null);
+  const [transcriptionError, setTranscriptionError] = useState('');
   const [toast, setToast] = useState('');
   const activeProject = projects.find((project) => project.id === activeId);
 
@@ -677,6 +686,7 @@ export default function App() {
     }
     if (!file) return notify('Сначала загрузите исходное видео');
 
+    setTranscriptionError('');
     setProcessing('transcribe');
     try {
       const form = new FormData();
@@ -686,16 +696,23 @@ export default function App() {
         headers: apiKey ? { 'x-groq-api-key': apiKey } : {},
         body: form,
       });
-      const payload = await response.json().catch(() => ({}));
+      const responseText = await response.text();
+      let payload = {};
+      try {
+        payload = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        payload = {};
+      }
       if (!response.ok) {
         if (response.status === 401 || payload.code === 'MISSING_API_KEY') setSettingsOpen(true);
-        throw new Error(payload.error || 'Не удалось распознать речь');
+        throw new Error(payload.error || `Сервер вернул ошибку ${response.status}. Проверьте журнал Web Service на хостинге.`);
       }
       const transcript = normalizeTranscription(payload);
       if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость и язык видео.');
       updateProject({ transcript });
       notify(`Готово: ${transcript.length} фрагментов`);
     } catch (error) {
+      setTranscriptionError(error.message);
       notify(error.message);
     } finally {
       setProcessing(null);
@@ -769,6 +786,8 @@ export default function App() {
           onBurn={burnVideo}
           processing={processing}
           notify={notify}
+          transcriptionError={transcriptionError}
+          onDismissError={() => setTranscriptionError('')}
         />
       ) : (
         <Landing projects={projects} onFile={createProject} onDemo={openDemo} onOpen={openProject} onDelete={deleteProject} />
