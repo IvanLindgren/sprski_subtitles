@@ -330,7 +330,11 @@ video::cue { color: #fff; background-color: rgba(0, 0, 0, .82); font-family: Ari
 .word-card-title strong { font-family: Georgia, serif; font-size: 16px; color: var(--red-dark); }
 .word-card-title button { padding: 3px 5px; display: flex; align-items: center; gap: 4px; color: var(--muted); background: #eee6da; font-size: 7px; }
 .word-card-title button:hover { color: var(--red); }
-.word-card-main input, .word-card-main textarea { display: block; width: 100%; border: 0; border-bottom: 1px solid rgba(77,56,45,.12); background: transparent; outline: 0; padding: 4px 0; resize: none; font-size: 10px; color: var(--ink); }
+.word-translation-status { display: flex; align-items: center; gap: 5px; margin: -1px 0 6px; color: var(--navy); font-size: 8px; line-height: 1.4; }
+.word-translation-status.is-error { color: var(--red); }
+.word-translation-field { display: grid; grid-template-columns: 49px minmax(0, 1fr); align-items: center; gap: 7px; border-bottom: 1px solid rgba(77,56,45,.12); }
+.word-translation-field > span { color: var(--red); font-size: 7px; font-weight: 800; letter-spacing: .08em; }
+.word-card-main input, .word-card-main textarea { display: block; width: 100%; border: 0; background: transparent; outline: 0; padding: 5px 0; resize: none; font-size: 10px; color: var(--ink); }
 .word-card-main textarea { color: var(--muted); border-bottom: 0; margin-top: 3px; }
 .remove-word { position: absolute; right: 6px; top: 5px; opacity: 0; color: #a7988e; padding: 3px; }
 .word-card:hover .remove-word { opacity: 1; }

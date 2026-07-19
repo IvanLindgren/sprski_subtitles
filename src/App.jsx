@@ -44,6 +44,20 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function requestWordTranslation(word, context, apiKey) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['x-groq-api-key'] = apiKey;
+  const response = await fetch(apiUrl('/api/translate'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ word, context }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'Не удалось получить перевод.');
+  if (!payload.ru || !payload.en) throw new Error('Сервис вернул неполный перевод.');
+  return payload;
+}
+
 function startTranscriptionJob(form, apiKey, onProgress) {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -118,7 +132,13 @@ const DEMO_SEGMENTS = [
 
 function loadProjects() {
   try {
-    return JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
+    const projects = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
+    return projects.map((project) => ({
+      ...project,
+      glossary: (project.glossary || []).map((item) => (
+        item.translationStatus === 'loading' ? { ...item, translationStatus: 'idle' } : item
+      )),
+    }));
   } catch {
     return [];
   }
@@ -501,7 +521,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
         <>
           <div className="transcript-tools">
             <div className="search-box"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Найти в тексте…" /></div>
-            <span><span className="click-dot" /> Нажмите на слово, чтобы сохранить</span>
+            <span><span className="click-dot" /> Нажмите на слово, чтобы перевести и сохранить</span>
           </div>
           <div className="segments">
             {visible.map((segment) => {
@@ -510,7 +530,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
                 <article key={segment.id} className={`segment ${active ? 'is-active' : ''}`}>
                   <button className="segment-time" onClick={() => onSeek(segment.start)}>{formatClock(segment.start)}</button>
                   <p>{segment.text.split(/\s+/).map((word, index) => (
-                    <WordToken key={`${word}-${index}`} value={word} added={saved.has(cleanWord(word))} onAdd={(cleaned) => onAddWord(cleaned, segment.start)} />
+                    <WordToken key={`${word}-${index}`} value={word} added={saved.has(cleanWord(word))} onAdd={(cleaned) => onAddWord(cleaned, segment.start, segment.text)} />
                   ))}</p>
                   {active && <span className="playing-bars"><i /><i /><i /></span>}
                 </article>
@@ -532,7 +552,12 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
 
 function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, processing }) {
   const [query, setQuery] = useState('');
-  const glossary = (project.glossary || []).filter((item) => item.word.includes(query.toLocaleLowerCase('sr')) || item.translation?.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')));
+  const normalizedQuery = query.toLocaleLowerCase('sr');
+  const glossary = (project.glossary || []).filter((item) => (
+    item.word.includes(normalizedQuery)
+    || (item.translationRu || item.translation || '').toLocaleLowerCase('ru').includes(normalizedQuery)
+    || (item.translationEn || '').toLocaleLowerCase('en').includes(normalizedQuery)
+  ));
 
   return (
     <aside className="glossary-panel">
@@ -552,12 +577,30 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                 <strong>{item.word}</strong>
                 <button onClick={() => onSeek(item.time)}><Clock3 size={13} /> {formatClock(item.time)}</button>
               </div>
-              <input
-                value={item.translation || ''}
-                onChange={(event) => onChangeItem(item.id, { translation: event.target.value })}
-                placeholder="Добавить перевод…"
-                aria-label={`Перевод слова ${item.word}`}
-              />
+              {item.translationStatus === 'loading' && (
+                <div className="word-translation-status"><LoaderCircle size={13} className="spin" /> Подбираем русский и английский переводы…</div>
+              )}
+              {item.translationStatus === 'error' && (
+                <div className="word-translation-status is-error">Перевод временно недоступен. Нажмите на слово ещё раз.</div>
+              )}
+              <label className="word-translation-field">
+                <span>РУССКИЙ</span>
+                <input
+                  value={item.translationRu || item.translation || ''}
+                  onChange={(event) => onChangeItem(item.id, { translationRu: event.target.value, translation: event.target.value })}
+                  placeholder="Русский перевод"
+                  aria-label={`Русский перевод слова ${item.word}`}
+                />
+              </label>
+              <label className="word-translation-field">
+                <span>ENGLISH</span>
+                <input
+                  value={item.translationEn || ''}
+                  onChange={(event) => onChangeItem(item.id, { translationEn: event.target.value })}
+                  placeholder="English translation"
+                  aria-label={`Английский перевод слова ${item.word}`}
+                />
+              </label>
               <textarea
                 value={item.note || ''}
                 onChange={(event) => onChangeItem(item.id, { note: event.target.value })}
@@ -572,7 +615,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
           <div className="empty-glossary">
             <div className="empty-book"><BookOpen size={27} /><Plus size={14} /></div>
             <strong>{query ? 'Слово не найдено' : 'Словарь пока пуст'}</strong>
-            <p>{query ? 'Попробуйте другой запрос.' : 'Нажимайте на незнакомые слова в тексте — они появятся здесь.'}</p>
+            <p>{query ? 'Попробуйте другой запрос.' : 'Нажимайте на незнакомые слова в тексте — здесь появятся русский и английский переводы.'}</p>
           </div>
         )}
       </div>
@@ -586,7 +629,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
   );
 }
 
-function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
+function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
@@ -600,14 +643,65 @@ function Workspace({ project, videoUrl, videoFile, onBack, onUpdate, onTranscrib
     }
   };
 
-  const addWord = (word, time) => {
+  const translateGlossaryItem = async (id, word, context, markLoading = true) => {
+    if (markLoading) {
+      onUpdate((currentProject) => ({
+        glossary: (currentProject.glossary || []).map((item) => (
+          item.id === id ? { ...item, translationStatus: 'loading' } : item
+        )),
+      }));
+    }
+    try {
+      const translated = await requestWordTranslation(word, context, apiKey);
+      onUpdate((currentProject) => ({
+        glossary: (currentProject.glossary || []).map((item) => (
+          item.id === id ? {
+            ...item,
+            translation: translated.ru,
+            translationRu: translated.ru,
+            translationEn: translated.en,
+            translationStatus: 'ready',
+            translationProvider: translated.provider,
+          } : item
+        )),
+      }));
+      notify(`«${word}»: ${translated.ru} · ${translated.en}`);
+    } catch (error) {
+      onUpdate((currentProject) => ({
+        glossary: (currentProject.glossary || []).map((item) => (
+          item.id === id ? { ...item, translationStatus: 'error' } : item
+        )),
+      }));
+      notify(error.message);
+    }
+  };
+
+  const addWord = (word, time, context) => {
     if (!word) return;
-    if (project.glossary?.some((item) => item.word === word)) {
-      notify(`«${word}» уже есть в словаре`);
+    const existing = project.glossary?.find((item) => item.word === word);
+    if (existing) {
+      if (existing.translationStatus === 'loading') return;
+      if ((existing.translationRu || existing.translation) && existing.translationEn) {
+        notify(`«${word}»: ${existing.translationRu || existing.translation} · ${existing.translationEn}`);
+        return;
+      }
+      translateGlossaryItem(existing.id, word, context);
       return;
     }
-    onUpdate({ glossary: [...(project.glossary || []), { id: crypto.randomUUID(), word, translation: '', note: '', time }] });
-    notify(`«${word}» добавлено в словарь`);
+    const id = crypto.randomUUID();
+    onUpdate((currentProject) => ({
+      glossary: [...(currentProject.glossary || []), {
+        id,
+        word,
+        translation: '',
+        translationRu: '',
+        translationEn: '',
+        translationStatus: 'loading',
+        note: '',
+        time,
+      }],
+    }));
+    translateGlossaryItem(id, word, context, false);
   };
 
   const changeItem = (id, patch) => onUpdate({
@@ -1019,8 +1113,8 @@ export default function App() {
       createdAt: Date.now(),
       transcript: DEMO_SEGMENTS,
       glossary: [
-        { id: 'g1', word: 'прошетати', translation: 'прогуляться', note: '', time: 4.4 },
-        { id: 'g2', word: 'кораку', translation: 'шагу', note: 'на сваком кораку — на каждом шагу', time: 8.8 },
+        { id: 'g1', word: 'прошетати', translation: 'прогуляться', translationRu: 'прогуляться', translationEn: 'take a walk', translationStatus: 'ready', note: '', time: 4.4 },
+        { id: 'g2', word: 'кораку', translation: 'шагу', translationRu: 'шагу', translationEn: 'step', translationStatus: 'ready', note: 'на сваком кораку — на каждом шагу', time: 8.8 },
       ],
     };
     setProjects((current) => [project, ...current]);
@@ -1054,9 +1148,11 @@ export default function App() {
     }
   };
 
-  const updateProject = (patch) => setProjects((current) => current.map((project) => (
-    project.id === activeId ? { ...project, ...patch, updatedAt: Date.now() } : project
-  )));
+  const updateProject = (patchOrUpdater) => setProjects((current) => current.map((project) => {
+    if (project.id !== activeId) return project;
+    const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(project) : patchOrUpdater;
+    return { ...project, ...patch, updatedAt: Date.now() };
+  }));
 
   const transcribe = async () => {
     let file = videoFile;
@@ -1207,6 +1303,7 @@ export default function App() {
           project={activeProject}
           videoUrl={videoUrl}
           videoFile={videoFile}
+          apiKey={apiKey}
           onBack={goHome}
           onUpdate={updateProject}
           onTranscribe={transcribe}

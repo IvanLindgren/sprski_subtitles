@@ -43,6 +43,8 @@ const objectStorageClient = publicLibraryConfigured ? new S3Client({
 }) : null;
 const publicationAttempts = new Map();
 const transcriptionJobs = new Map();
+const translationAttempts = new Map();
+const translationCache = new Map();
 const allowedOrigins = new Set([
   'https://sprskisubtitles.netlify.app',
   'http://127.0.0.1:5173',
@@ -71,6 +73,106 @@ app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), provider: 'groq', publicLibrary: publicLibraryConfigured });
+});
+
+function translationRateLimited(ip) {
+  const now = Date.now();
+  const recent = (translationAttempts.get(ip) || []).filter((timestamp) => now - timestamp < 60 * 1000);
+  if (recent.length >= 30) return true;
+  recent.push(now);
+  translationAttempts.set(ip, recent);
+  return false;
+}
+
+function cleanTranslation(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+}
+
+async function translateWordWithGroq(word, context, apiKey) {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'openai/gpt-oss-20b',
+      temperature: 0,
+      reasoning_effort: 'low',
+      max_completion_tokens: 300,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a Serbian bilingual dictionary. Translate the supplied Serbian word as it is used in the supplied sentence. Return only a JSON object with two short string fields: ru for Russian and en for English. Preserve the meaning and prefer a dictionary form when helpful.',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({ word, context }),
+        },
+      ],
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error?.message || `Groq returned ${response.status}`);
+  const content = String(payload?.choices?.[0]?.message?.content || '');
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('Groq did not return translation JSON');
+  const parsed = JSON.parse(jsonMatch[0]);
+  const ru = cleanTranslation(parsed.ru);
+  const en = cleanTranslation(parsed.en);
+  if (!ru || !en) throw new Error('Groq returned an incomplete translation');
+  return { ru, en, provider: 'groq' };
+}
+
+async function translateWordWithMyMemory(word) {
+  const translateTo = async (language) => {
+    const url = new URL('https://api.mymemory.translated.net/get');
+    url.searchParams.set('q', word);
+    url.searchParams.set('langpair', `sr|${language}`);
+    const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    const payload = await response.json().catch(() => ({}));
+    const translation = cleanTranslation(payload?.responseData?.translatedText);
+    if (!response.ok || Number(payload?.responseStatus || response.status) >= 400 || !translation) {
+      throw new Error(payload?.responseDetails || `MyMemory returned ${response.status}`);
+    }
+    return translation;
+  };
+  const [ru, en] = await Promise.all([translateTo('ru'), translateTo('en')]);
+  return { ru, en, provider: 'mymemory' };
+}
+
+app.post('/api/translate', async (req, res) => {
+  const word = String(req.body?.word || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const context = String(req.body?.context || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (!word || word.includes(' ')) return res.status(400).json({ error: 'Передайте одно сербское слово.' });
+
+  const cacheKey = `${word.toLocaleLowerCase('sr')}|${context.toLocaleLowerCase('sr')}`;
+  const cached = translationCache.get(cacheKey);
+  if (cached) return res.json({ ...cached, cached: true });
+  if (translationRateLimited(req.ip || req.socket.remoteAddress || 'unknown')) {
+    return res.status(429).json({ error: 'Слишком много переводов за одну минуту. Попробуйте немного позже.' });
+  }
+
+  const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
+  let result;
+  if (apiKey) {
+    try {
+      result = await translateWordWithGroq(word, context, apiKey);
+    } catch (error) {
+      console.warn(`[translate] Groq unavailable, using MyMemory: ${error.message}`);
+    }
+  }
+
+  try {
+    result ||= await translateWordWithMyMemory(word);
+    translationCache.set(cacheKey, result);
+    if (translationCache.size > 2000) translationCache.delete(translationCache.keys().next().value);
+    return res.json(result);
+  } catch (error) {
+    console.error('[translate] Translation failed:', error);
+    return res.status(502).json({ error: 'Не удалось получить перевод. Попробуйте нажать на слово ещё раз.' });
+  }
 });
 
 function publicObjectUrl(key) {
