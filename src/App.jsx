@@ -350,6 +350,34 @@ function DemoPlayer({ currentTime, onTime, activeSegment }) {
   );
 }
 
+function SubtitleTrack({ segments }) {
+  const trackRef = useRef(null);
+  const trackUrl = useMemo(() => {
+    if (!segments?.length) return '';
+    return URL.createObjectURL(new Blob([makeVtt(segments)], { type: 'text/vtt;charset=utf-8' }));
+  }, [segments]);
+
+  useEffect(() => () => {
+    if (trackUrl) URL.revokeObjectURL(trackUrl);
+  }, [trackUrl]);
+
+  if (!trackUrl) return null;
+
+  return (
+    <track
+      ref={trackRef}
+      kind="subtitles"
+      src={trackUrl}
+      srcLang="sr"
+      label="Srpski"
+      default
+      onLoad={() => {
+        if (trackRef.current?.track) trackRef.current.track.mode = 'showing';
+      }}
+    />
+  );
+}
+
 function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSegment, onTranscribe, processing, transcriptionError, onDismissError }) {
   return (
     <section className="video-column">
@@ -359,8 +387,9 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
           <DemoPlayer currentTime={currentTime} onTime={onTime} activeSegment={activeSegment} />
         ) : videoUrl ? (
           <div className="real-player">
-            <video ref={videoRef} src={videoUrl} controls onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)} />
-            {activeSegment && <div className="subtitle-overlay">{activeSegment.text}</div>}
+            <video ref={videoRef} src={videoUrl} controls playsInline onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}>
+              <SubtitleTrack segments={project.transcript} />
+            </video>
           </div>
         ) : (
           <div className="missing-video"><Film size={32} /><strong>Исходное видео не найдено</strong><span>Загрузите файл заново, чтобы продолжить.</span></div>
@@ -656,7 +685,6 @@ function PublicLibrary({ refreshToken, notify }) {
   };
 
   if (selected) {
-    const activeSegment = selected.segments?.find((segment) => currentTime >= segment.start && currentTime < segment.end);
     return (
       <main className="public-library public-viewer">
         <div className="library-heading">
@@ -667,8 +695,9 @@ function PublicLibrary({ refreshToken, notify }) {
         </div>
         <section className="public-player-layout">
           <div className="public-video-shell">
-            <video ref={videoRef} src={selected.videoUrl} controls playsInline onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} />
-            {activeSegment && <div className="subtitle-overlay">{activeSegment.text}</div>}
+            <video ref={videoRef} src={selected.videoUrl} controls playsInline onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}>
+              <SubtitleTrack segments={selected.segments} />
+            </video>
           </div>
           <div className="public-transcript">
             <div className="public-transcript-heading"><span>СЕРБСКИЕ СУБТИТРЫ</span><h2>Текст видео</h2></div>
