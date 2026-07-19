@@ -10,7 +10,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22.16.0
-      - key: GROQ_API_KEY
-        sync: false
       - key: FRONTEND_ORIGIN
         value: https://sprskisubtitles.netlify.app
