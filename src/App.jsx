@@ -33,8 +33,6 @@ import { cleanWord, downloadText, formatClock, makeSrt, makeVtt } from './subtit
 
 const PROJECTS_KEY = 'recnik-projects-v1';
 const API_KEY_STORAGE_KEY = 'recnik-groq-key';
-const YANDEX_API_KEY_STORAGE_KEY = 'recnik-yandex-translate-key';
-const YANDEX_FOLDER_ID_STORAGE_KEY = 'recnik-yandex-folder-id';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
 
@@ -46,11 +44,9 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function requestWordTranslation(word, context, apiKey, yandexApiKey, yandexFolderId) {
+async function requestWordTranslation(word, context, apiKey) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['x-groq-api-key'] = apiKey;
-  if (yandexApiKey) headers['x-yandex-api-key'] = yandexApiKey;
-  if (yandexFolderId) headers['x-yandex-folder-id'] = yandexFolderId;
   const response = await fetch(apiUrl('/api/translate'), {
     method: 'POST',
     headers,
@@ -157,10 +153,6 @@ function loadApiKey() {
     sessionStorage.removeItem(API_KEY_STORAGE_KEY);
   }
   return previousSessionKey;
-}
-
-function loadLocalSetting(key) {
-  return localStorage.getItem(key) || '';
 }
 
 function fileStem(filename = 'video') {
@@ -637,7 +629,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
   );
 }
 
-function Workspace({ project, videoUrl, videoFile, apiKey, yandexApiKey, yandexFolderId, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
+function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
@@ -660,7 +652,7 @@ function Workspace({ project, videoUrl, videoFile, apiKey, yandexApiKey, yandexF
       }));
     }
     try {
-      const translated = await requestWordTranslation(word, context, apiKey, yandexApiKey, yandexFolderId);
+      const translated = await requestWordTranslation(word, context, apiKey);
       onUpdate((currentProject) => ({
         glossary: (currentProject.glossary || []).map((item) => (
           item.id === id ? {
@@ -943,37 +935,24 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
   );
 }
 
-function SettingsModal({ value, yandexKeyValue, yandexFolderValue, onSave, onClose }) {
+function SettingsModal({ value, onSave, onClose }) {
   const [key, setKey] = useState(value);
-  const [yandexKey, setYandexKey] = useState(yandexKeyValue);
-  const [yandexFolder, setYandexFolder] = useState(yandexFolderValue);
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
         <button className="modal-close" onClick={onClose} aria-label="Закрыть настройки"><X size={20} /></button>
         <div className="modal-icon"><KeyRound size={24} /></div>
         <span className="modal-kicker">ПОДКЛЮЧЕНИЕ</span>
-        <h2>Ключи сервисов</h2>
-        <p>Groq распознаёт сербскую речь, а Yandex Translate переводит выбранные слова на русский и английский. Все значения сохраняются только в локальном хранилище этого браузера.</p>
+        <h2>Ключ Groq API</h2>
+        <p>Groq распознаёт сербскую речь. Перевод выбранных слов через Yandex Translate выполняется на сервере и не требует ключа от пользователя.</p>
         <p className="key-guide-copy">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, после чего скопируйте созданный ключ, который начинается с gsk_, и вставьте его в поле.</p>
         <label>GROQ API KEY
           <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="gsk_••••••••••••••••" autoFocus />
         </label>
         <div className="free-info"><Sparkles size={18} /><p>Бесплатный тариф Groq позволяет выполнить 2 000 запросов в сутки и распознать до двух часов аудио в час или восьми часов в сутки. После сжатия файл должен занимать не более 25 МБ.</p></div>
-        <div className="settings-section-title">ПЕРЕВОД СЛОВ ЧЕРЕЗ ЯНДЕКС</div>
-        <p className="yandex-guide-copy">В Yandex Cloud создайте сервисный аккаунт с ролью ai.translate.user, затем API-ключ с областью yc.ai.translate.execute. Ниже вставьте секрет ключа и идентификатор каталога Folder ID.</p>
-        <label>YANDEX TRANSLATE API KEY
-          <input type="password" value={yandexKey} onChange={(event) => setYandexKey(event.target.value)} placeholder="AQVN…" />
-        </label>
-        <label>YANDEX FOLDER ID
-          <input value={yandexFolder} onChange={(event) => setYandexFolder(event.target.value)} placeholder="b1g…" />
-        </label>
         <div className="modal-actions">
-          <div className="settings-links">
-            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Groq <ChevronRight size={15} /></a>
-            <a href="https://yandex.cloud/ru/docs/translate/operations/translate" target="_blank" rel="noreferrer">Yandex Translate <ChevronRight size={15} /></a>
-          </div>
-          <button className="primary-button" onClick={() => onSave({ groqKey: key.trim(), yandexApiKey: yandexKey.trim(), yandexFolderId: yandexFolder.trim() })}>Сохранить</button>
+          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Получить ключ <ChevronRight size={15} /></a>
+          <button className="primary-button" onClick={() => onSave(key.trim())}>Сохранить ключ</button>
         </div>
       </section>
     </div>
@@ -1054,8 +1033,6 @@ export default function App() {
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [apiKey, setApiKey] = useState(loadApiKey);
-  const [yandexApiKey, setYandexApiKey] = useState(() => loadLocalSetting(YANDEX_API_KEY_STORAGE_KEY));
-  const [yandexFolderId, setYandexFolderId] = useState(() => loadLocalSetting(YANDEX_FOLDER_ID_STORAGE_KEY));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(() => sessionStorage.getItem('recnik-welcome-seen') !== '1');
   const [publishOpen, setPublishOpen] = useState(false);
@@ -1302,22 +1279,6 @@ export default function App() {
     notify(key ? 'Ключ сохранён в этом браузере' : 'Ключ удалён');
   };
 
-  const saveSettings = ({ groqKey, yandexApiKey: nextYandexApiKey, yandexFolderId: nextYandexFolderId }) => {
-    setApiKey(groqKey);
-    setYandexApiKey(nextYandexApiKey);
-    setYandexFolderId(nextYandexFolderId);
-    if (groqKey) localStorage.setItem(API_KEY_STORAGE_KEY, groqKey);
-    else localStorage.removeItem(API_KEY_STORAGE_KEY);
-    if (nextYandexApiKey) localStorage.setItem(YANDEX_API_KEY_STORAGE_KEY, nextYandexApiKey);
-    else localStorage.removeItem(YANDEX_API_KEY_STORAGE_KEY);
-    if (nextYandexFolderId) localStorage.setItem(YANDEX_FOLDER_ID_STORAGE_KEY, nextYandexFolderId);
-    else localStorage.removeItem(YANDEX_FOLDER_ID_STORAGE_KEY);
-    sessionStorage.removeItem(API_KEY_STORAGE_KEY);
-    navigator.storage?.persist?.().catch(() => {});
-    setSettingsOpen(false);
-    notify(nextYandexApiKey && nextYandexFolderId ? 'Yandex Translate подключён' : 'Настройки сохранены');
-  };
-
   const closeWelcome = () => {
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
@@ -1344,8 +1305,6 @@ export default function App() {
           videoUrl={videoUrl}
           videoFile={videoFile}
           apiKey={apiKey}
-          yandexApiKey={yandexApiKey}
-          yandexFolderId={yandexFolderId}
           onBack={goHome}
           onUpdate={updateProject}
           onTranscribe={transcribe}
@@ -1367,7 +1326,7 @@ export default function App() {
         <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">По вопросам: @ivanlindgren</a>
         <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> Инструкция по ключу</button>
       </footer>
-      {settingsOpen && <SettingsModal value={apiKey} yandexKeyValue={yandexApiKey} yandexFolderValue={yandexFolderId} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
       {welcomeOpen && <WelcomeModal value={apiKey} onSave={saveKey} onClose={closeWelcome} />}
       {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
       <ProcessingBanner kind={processing} progress={transcriptionProgress} />

@@ -430,10 +430,6 @@ footer a:hover { text-decoration: underline; }
 .modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 .modal-actions a { color: var(--red); display: flex; align-items: center; text-decoration: none; font-size: 9px; font-weight: 700; }
 .key-guide-copy { margin-top: -8px !important; font-size: 9px !important; }
-.settings-section-title { margin: 4px 0 8px; color: var(--navy); font-size: 8px; font-weight: 800; letter-spacing: .16em; }
-.yandex-guide-copy { margin: 0 0 13px !important; color: var(--muted); font-size: 9px !important; line-height: 1.55 !important; }
-.settings-links { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-
 .welcome-modal { width: min(870px, 100%); min-height: 570px; background: var(--paper-light); position: relative; display: grid; grid-template-columns: 42% 58%; overflow: hidden; box-shadow: 0 35px 95px rgba(0,0,0,.36); }
 .welcome-modal::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 8px; z-index: 2; background: repeating-linear-gradient(45deg, var(--red) 0 8px, var(--paper) 8px 12px, var(--navy) 12px 20px, var(--paper) 20px 24px); }
 .welcome-wolf-wrap { background: linear-gradient(150deg, #ead8c1, #f8eee0 62%, #d8c0a5); position: relative; display: flex; align-items: flex-end; justify-content: center; overflow: hidden; }

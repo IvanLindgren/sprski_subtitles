@@ -45,6 +45,9 @@ const publicationAttempts = new Map();
 const transcriptionJobs = new Map();
 const translationAttempts = new Map();
 const translationCache = new Map();
+const yandexTranslateConfigured = Boolean(
+  process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
+);
 const allowedOrigins = new Set([
   'https://sprskisubtitles.netlify.app',
   'http://127.0.0.1:5173',
@@ -63,7 +66,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key,X-Yandex-Api-Key,X-Yandex-Folder-Id');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -72,7 +75,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), provider: 'groq', publicLibrary: publicLibraryConfigured });
+  res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), provider: 'groq', publicLibrary: publicLibraryConfigured, yandexTranslate: yandexTranslateConfigured });
 });
 
 function translationRateLimited(ip) {
@@ -168,8 +171,8 @@ app.post('/api/translate', async (req, res) => {
   const context = String(req.body?.context || '').replace(/\s+/g, ' ').trim().slice(0, 500);
   if (!word || word.includes(' ')) return res.status(400).json({ error: 'Передайте одно сербское слово.' });
 
-  const yandexApiKey = process.env.YANDEX_TRANSLATE_API_KEY || req.get('x-yandex-api-key');
-  const yandexFolderId = process.env.YANDEX_FOLDER_ID || req.get('x-yandex-folder-id');
+  const yandexApiKey = process.env.YANDEX_TRANSLATE_API_KEY;
+  const yandexFolderId = process.env.YANDEX_FOLDER_ID;
   const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
   const preferredProvider = yandexApiKey && yandexFolderId ? 'yandex' : 'groq';
   const cacheKey = `${preferredProvider}|${word.toLocaleLowerCase('sr')}|${context.toLocaleLowerCase('sr')}`;
@@ -198,7 +201,7 @@ app.post('/api/translate', async (req, res) => {
   try {
     if (!result) {
       return res.status(503).json({
-        error: 'Переводчик не подключён. Добавьте ключ Yandex Translate и Folder ID в настройках либо проверьте ключ Groq.',
+        error: 'Перевод слов временно недоступен. Повторите попытку позже.',
       });
     }
     if (result.provider === preferredProvider) translationCache.set(cacheKey, result);

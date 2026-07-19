@@ -24,3 +24,7 @@ services:
         sync: false
       - key: PUBLIC_MEDIA_BASE_URL
         sync: false
+      - key: YANDEX_TRANSLATE_API_KEY
+        sync: false
+      - key: YANDEX_FOLDER_ID
+        sync: false
