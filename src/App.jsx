@@ -40,6 +40,72 @@ function apiUrl(pathname) {
   return `${API_BASE_URL}${pathname}`;
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function startTranscriptionJob(form, apiKey, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const startedAt = performance.now();
+    request.open('POST', apiUrl('/api/transcribe/jobs'));
+    if (apiKey) request.setRequestHeader('x-groq-api-key', apiKey);
+    request.timeout = 10 * 60 * 1000;
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable) {
+        onProgress({ percent: 5, stage: 'Загружаем видео на сервер', etaSeconds: null });
+        return;
+      }
+      const elapsedSeconds = Math.max(0.1, (performance.now() - startedAt) / 1000);
+      const bytesPerSecond = event.loaded / elapsedSeconds;
+      const etaSeconds = bytesPerSecond > 0 ? (event.total - event.loaded) / bytesPerSecond : null;
+      onProgress({ percent: Math.min(20, (event.loaded / event.total) * 20), stage: 'Загружаем видео на сервер', etaSeconds });
+    };
+    request.onload = () => {
+      let payload = {};
+      try { payload = JSON.parse(request.responseText || '{}'); } catch { payload = {}; }
+      if (request.status >= 200 && request.status < 300 && payload.id) return resolve(payload);
+      const error = new Error(payload.error || `Сервер вернул ошибку ${request.status}.`);
+      error.status = request.status;
+      error.code = payload.code;
+      return reject(error);
+    };
+    request.onerror = () => reject(new Error('Соединение с Render прервалось во время загрузки видео.'));
+    request.ontimeout = () => reject(new Error('Загрузка видео на Render заняла больше десяти минут и была остановлена.'));
+    request.send(form);
+  });
+}
+
+async function waitForTranscriptionJob(id, onProgress) {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let failedPolls = 0;
+  while (Date.now() < deadline) {
+    await wait(1000);
+    try {
+      const response = await fetch(apiUrl(`/api/transcribe/jobs/${id}`), { cache: 'no-store' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Не удалось получить состояние задачи: ${response.status}.`);
+      failedPolls = 0;
+      onProgress({
+        percent: Number(payload.progress) || 0,
+        stage: payload.stage || 'Распознаём сербскую речь',
+        etaSeconds: Number.isFinite(payload.etaSeconds) ? payload.etaSeconds : null,
+        elapsedSeconds: payload.elapsedSeconds,
+      });
+      if (payload.status === 'done') return payload.result;
+      if (payload.status === 'error') {
+        const error = new Error(payload.error || 'Распознавание остановлено.');
+        error.code = payload.code;
+        throw error;
+      }
+    } catch (error) {
+      if (error.code || ++failedPolls >= 5) throw error;
+      await wait(1000);
+    }
+  }
+  throw new Error('Распознавание заняло больше тридцати минут и было остановлено.');
+}
+
 const DEMO_SEGMENTS = [
   { id: 'd1', start: 0, end: 4.4, text: 'Добро дошли у Београд, град који никада не мирује.' },
   { id: 'd2', start: 4.4, end: 8.8, text: 'Данас ћемо прошетати старим улицама Дорћола.' },
@@ -752,10 +818,35 @@ function WelcomeModal({ value, onSave, onClose }) {
   );
 }
 
-function ProcessingBanner({ kind }) {
+function remainingLabel(seconds) {
+  if (!Number.isFinite(seconds)) return null;
+  if (seconds < 60) return `осталось примерно ${Math.max(1, Math.round(seconds))} сек`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `осталось примерно ${minutes} мин ${remainder} сек`;
+}
+
+function ProcessingBanner({ kind, progress }) {
   if (!kind) return null;
   const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : 'Распознаём сербскую речь';
   const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : 'Извлекаем звук и расставляем таймкоды…';
+  if (kind === 'transcribe' && progress) {
+    const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+    const remaining = remainingLabel(progress.etaSeconds);
+    return (
+      <div className="processing-banner processing-banner--progress" role="status" aria-live="polite">
+        <div className="processing-progress-heading">
+          <div><LoaderCircle size={18} className="spin" /><strong>{title}</strong></div>
+          <b>{percent}%</b>
+        </div>
+        <div className="processing-progress-track"><span style={{ width: `${percent}%` }} /></div>
+        <div className="processing-progress-copy">
+          <span>{progress.stage || copy}</span>
+          <small>{remaining || (percent >= 60 && percent < 99 ? 'Groq отвечает дольше обычного, задача продолжает выполняться' : 'оцениваем оставшееся время')}</small>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="processing-banner">
       <LoaderCircle size={18} className="spin" />
@@ -776,6 +867,7 @@ export default function App() {
   const [publishOpen, setPublishOpen] = useState(false);
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [processing, setProcessing] = useState(null);
+  const [transcriptionProgress, setTranscriptionProgress] = useState(null);
   const [transcriptionError, setTranscriptionError] = useState('');
   const [toast, setToast] = useState('');
   const activeProject = projects.find((project) => project.id === activeId);
@@ -906,34 +998,25 @@ export default function App() {
 
     setTranscriptionError('');
     setProcessing('transcribe');
+    setTranscriptionProgress({ percent: 0, stage: 'Подготавливаем видео к загрузке', etaSeconds: null });
     try {
       const form = new FormData();
       form.append('video', file, file.name);
-      const response = await fetch(apiUrl('/api/transcribe'), {
-        method: 'POST',
-        headers: apiKey ? { 'x-groq-api-key': apiKey } : {},
-        body: form,
-      });
-      const responseText = await response.text();
-      let payload = {};
-      try {
-        payload = responseText ? JSON.parse(responseText) : {};
-      } catch {
-        payload = {};
-      }
-      if (!response.ok) {
-        if (response.status === 401 || payload.code === 'MISSING_API_KEY') setSettingsOpen(true);
-        throw new Error(payload.error || `Сервер вернул ошибку ${response.status}. Проверьте журнал Web Service на хостинге.`);
-      }
+      const job = await startTranscriptionJob(form, apiKey, setTranscriptionProgress);
+      const payload = await waitForTranscriptionJob(job.id, setTranscriptionProgress);
       const transcript = normalizeTranscription(payload);
       if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость и язык видео.');
+      setTranscriptionProgress({ percent: 100, stage: 'Субтитры готовы', etaSeconds: 0 });
       updateProject({ transcript });
       notify(`Готово: ${transcript.length} фрагментов`);
+      await wait(700);
     } catch (error) {
+      if (error.status === 401 || error.code === 'MISSING_API_KEY') setSettingsOpen(true);
       setTranscriptionError(error.message);
       notify(error.message);
     } finally {
       setProcessing(null);
+      setTranscriptionProgress(null);
     }
   };
 
@@ -1072,7 +1155,7 @@ export default function App() {
       {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
       {welcomeOpen && <WelcomeModal value={apiKey} onSave={saveKey} onClose={closeWelcome} />}
       {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
-      <ProcessingBanner kind={processing} />
+      <ProcessingBanner kind={processing} progress={transcriptionProgress} />
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
   );

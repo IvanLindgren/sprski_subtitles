@@ -42,6 +42,7 @@ const objectStorageClient = publicLibraryConfigured ? new S3Client({
   },
 }) : null;
 const publicationAttempts = new Map();
+const transcriptionJobs = new Map();
 const allowedOrigins = new Set([
   'https://sprskisubtitles.netlify.app',
   'http://127.0.0.1:5173',
@@ -273,18 +274,46 @@ app.post(
 
 function runFfmpeg(args, options = {}) {
   return new Promise((resolve, reject) => {
+    const { onProgress, ...spawnOptions } = options;
     const process = spawn(ffmpegPath, args, {
       windowsHide: true,
-      ...options,
+      ...spawnOptions,
     });
     let stderr = '';
+    let stdout = '';
+    let durationSeconds = 0;
+    let lastReportedFraction = -1;
     process.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
+      const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (durationMatch) {
+        durationSeconds = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]);
+      }
+    });
+    process.stdout.on('data', (chunk) => {
+      if (!onProgress) return;
+      stdout += chunk.toString();
+      const lines = stdout.split(/\r?\n/);
+      stdout = lines.pop() || '';
+      for (const line of lines) {
+        const [key, value] = line.split('=');
+        if ((key === 'out_time_us' || key === 'out_time_ms') && durationSeconds > 0) {
+          const currentSeconds = Number(value) / 1_000_000;
+          const fraction = Math.max(0, Math.min(1, currentSeconds / durationSeconds));
+          if (fraction >= 1 || fraction - lastReportedFraction >= 0.01) {
+            lastReportedFraction = fraction;
+            onProgress({ fraction, currentSeconds, durationSeconds });
+          }
+        }
+      }
     });
     process.on('error', reject);
     process.on('close', (code) => {
-      if (code === 0) resolve();
+      if (code === 0) {
+        if (onProgress && durationSeconds > 0) onProgress({ fraction: 1, currentSeconds: durationSeconds, durationSeconds });
+        resolve({ durationSeconds });
+      }
       else reject(new Error(stderr || `FFmpeg завершился с кодом ${code}`));
     });
   });
@@ -334,24 +363,80 @@ async function transcribeWithFallback(audio, apiKey, filename = 'speech.ogg') {
   }
 }
 
-app.post('/api/transcribe', upload.single('video'), async (req, res) => {
-  const sourcePath = req.file?.path;
-  const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
+function secondsLabel(value) {
+  if (!Number.isFinite(value) || value < 0) return 'неизвестно';
+  if (value < 60) return `${Math.max(1, Math.round(value))} с`;
+  return `${Math.floor(value / 60)} мин ${Math.round(value % 60)} с`;
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    progress: Math.round(job.progress),
+    stage: job.stage,
+    etaSeconds: Number.isFinite(job.etaSeconds) ? Math.max(0, Math.round(job.etaSeconds)) : null,
+    elapsedSeconds: Math.round((Date.now() - job.startedAt) / 1000),
+    createdAt: new Date(job.startedAt).toISOString(),
+    updatedAt: new Date(job.updatedAt).toISOString(),
+    result: job.status === 'done' ? job.result : undefined,
+    error: job.status === 'error' ? job.error : undefined,
+    code: job.status === 'error' ? job.code : undefined,
+  };
+}
+
+function updateTranscriptionJob(id, patch) {
+  const job = transcriptionJobs.get(id);
+  if (!job) return;
+  const nextProgress = Number.isFinite(patch.progress)
+    ? Math.max(job.progress, Math.min(100, patch.progress))
+    : job.progress;
+  Object.assign(job, patch, { progress: nextProgress, updatedAt: Date.now() });
+  const logBucket = Math.floor(nextProgress / 5) * 5;
+  const stageChanged = patch.stage && patch.stage !== job.lastLoggedStage;
+  if (stageChanged || logBucket > job.lastLoggedBucket || patch.status === 'done' || patch.status === 'error') {
+    job.lastLoggedBucket = Math.max(job.lastLoggedBucket, logBucket);
+    job.lastLoggedStage = job.stage;
+    const elapsed = (Date.now() - job.startedAt) / 1000;
+    const eta = Number.isFinite(job.etaSeconds)
+      ? secondsLabel(job.etaSeconds)
+      : nextProgress >= 60 ? 'дольше обычного' : 'уточняется';
+    const level = patch.status === 'error' ? 'error' : 'log';
+    console[level](`[transcribe:${id}] ${Math.round(nextProgress)}% · ${job.stage} · прошло ${secondsLabel(elapsed)} · осталось ${eta}`);
+  }
+}
+
+function runEstimatedStage(task, { from, to, expectedSeconds, onUpdate, stage }) {
+  const startedAt = Date.now();
+  onUpdate({ progress: from, stage, etaSeconds: expectedSeconds });
+  const timer = setInterval(() => {
+    const elapsed = (Date.now() - startedAt) / 1000;
+    const ratio = Math.min(0.94, elapsed / Math.max(1, expectedSeconds));
+    onUpdate({
+      progress: from + (to - from) * ratio,
+      stage,
+      etaSeconds: elapsed < expectedSeconds * 1.25 ? Math.max(1, expectedSeconds - elapsed) : null,
+    });
+  }, 1000);
+  timer.unref?.();
+  return Promise.resolve(task)
+    .then((result) => {
+      onUpdate({ progress: to, stage, etaSeconds: 0 });
+      return result;
+    })
+    .finally(() => clearInterval(timer));
+}
+
+async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}) {
   let tempDir;
-
   try {
-    if (!req.file) return res.status(400).json({ error: 'Сервер не получил видеофайл. Проверьте, что сайт развёрнут как Web Service, а не как Static Site.', code: 'MISSING_VIDEO_FILE' });
-    if (!apiKey) {
-      return res.status(401).json({
-        error: 'Добавьте GROQ_API_KEY на сервере или укажите ключ в настройках сайта.',
-        code: 'MISSING_API_KEY',
-      });
-    }
-
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-audio-'));
     const audioPath = path.join(tempDir, 'speech.ogg');
+    const extractionStartedAt = Date.now();
+    let videoDuration = 0;
+    onUpdate({ progress: 22, stage: 'Извлекаем и сжимаем аудио', etaSeconds: null });
 
-    await runFfmpeg([
+    const extraction = await runFfmpeg([
       '-y',
       '-i', sourcePath,
       '-vn',
@@ -361,21 +446,37 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
       '-af', 'asetpts=PTS-STARTPTS',
       '-c:a', 'libopus',
       '-b:a', '24k',
+      '-progress', 'pipe:1',
+      '-nostats',
       audioPath,
-    ]);
+    ], {
+      onProgress: ({ fraction, durationSeconds }) => {
+        videoDuration = durationSeconds || videoDuration;
+        const elapsed = (Date.now() - extractionStartedAt) / 1000;
+        const etaSeconds = fraction > 0.02 ? Math.max(0, elapsed / fraction - elapsed) : null;
+        onUpdate({ progress: 22 + fraction * 34, stage: 'Извлекаем и сжимаем аудио', etaSeconds });
+      },
+    });
+    videoDuration = extraction.durationSeconds || videoDuration;
 
+    onUpdate({ progress: 58, stage: 'Проверяем аудиодорожку', etaSeconds: 3 });
     const audio = await readFile(audioPath);
     if (audio.byteLength > 24.5 * 1024 * 1024) {
-      return res.status(413).json({
-        error: 'Аудиодорожка длиннее лимита бесплатного тарифа Groq. Разделите видео на части короче двух часов.',
-      });
+      const limitError = new Error('Аудиодорожка длиннее лимита бесплатного тарифа Groq. Разделите видео на части короче двух часов.');
+      limitError.status = 413;
+      throw limitError;
     }
 
-    const payload = await transcribeWithFallback(audio, apiKey);
+    const groqEstimate = Math.max(25, Math.min(180, (videoDuration || 600) * 0.08));
+    const payload = await runEstimatedStage(
+      transcribeWithFallback(audio, apiKey),
+      { from: 60, to: 92, expectedSeconds: groqEstimate, onUpdate, stage: 'Groq распознаёт сербскую речь' },
+    );
 
     const firstStart = Number(payload.segments?.[0]?.start);
     if (Number.isFinite(firstStart) && firstStart > 2.5) {
       try {
+        onUpdate({ progress: 93, stage: 'Проверяем начало видео', etaSeconds: 25 });
         const introPath = path.join(tempDir, 'intro.ogg');
         const introDuration = Math.min(65, Math.ceil(firstStart + 6));
         await runFfmpeg([
@@ -387,7 +488,10 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
           '-b:a', '24k',
           introPath,
         ]);
-        const introPayload = await transcribeWithFallback(await readFile(introPath), apiKey, 'intro.ogg');
+        const introPayload = await runEstimatedStage(
+          transcribeWithFallback(await readFile(introPath), apiKey, 'intro.ogg'),
+          { from: 95, to: 98, expectedSeconds: 25, onUpdate, stage: 'Восстанавливаем первые фразы' },
+        );
         const recovered = (introPayload.segments || []).filter((segment) => (
           Number(segment.start) < firstStart - 0.2 && Number(segment.end) <= firstStart + 0.5
         ));
@@ -401,10 +505,104 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
       }
     }
 
-    res.json(payload);
+    onUpdate({ progress: 99, stage: 'Сохраняем фрагменты и таймкоды', etaSeconds: 1 });
+    return payload;
+  } finally {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function runTranscriptionJob(id, sourcePath, apiKey) {
+  try {
+    const result = await processVideoTranscription(sourcePath, apiKey, (patch) => updateTranscriptionJob(id, patch));
+    updateTranscriptionJob(id, {
+      status: 'done',
+      progress: 100,
+      stage: 'Субтитры готовы',
+      etaSeconds: 0,
+      result,
+    });
+  } catch (error) {
+    updateTranscriptionJob(id, {
+      status: 'error',
+      stage: 'Распознавание остановлено',
+      etaSeconds: null,
+      error: error.message || 'Ошибка обработки видео.',
+      code: error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR',
+    });
+    console.error(`[transcribe:${id}]`, error);
+  } finally {
+    await rm(sourcePath, { force: true }).catch(() => {});
+  }
+}
+
+app.post(
+  '/api/transcribe/jobs',
+  (req, _res, next) => {
+    const id = randomUUID();
+    req.transcriptionJobId = id;
+    transcriptionJobs.set(id, {
+      id,
+      status: 'uploading',
+      progress: 0,
+      stage: 'Получаем видео от пользователя',
+      etaSeconds: null,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      lastLoggedBucket: -1,
+      lastLoggedStage: '',
+    });
+    updateTranscriptionJob(id, { progress: 0, stage: 'Получаем видео от пользователя', etaSeconds: null });
+    next();
+  },
+  upload.single('video'),
+  async (req, res) => {
+    const id = req.transcriptionJobId;
+    const sourcePath = req.file?.path;
+    const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
+    if (!req.file) {
+      updateTranscriptionJob(id, { status: 'error', stage: 'Видео не получено', error: 'Сервер не получил видеофайл.' });
+      return res.status(400).json({ error: 'Сервер не получил видеофайл.', code: 'MISSING_VIDEO_FILE' });
+    }
+    if (!apiKey) {
+      await rm(sourcePath, { force: true }).catch(() => {});
+      updateTranscriptionJob(id, { status: 'error', stage: 'Не указан ключ Groq', error: 'Добавьте ключ Groq в настройках сайта.' });
+      return res.status(401).json({ error: 'Добавьте GROQ_API_KEY на сервере или укажите ключ в настройках сайта.', code: 'MISSING_API_KEY' });
+    }
+
+    updateTranscriptionJob(id, { status: 'processing', progress: 20, stage: 'Видео загружено на сервер', etaSeconds: null });
+    res.status(202).json({ id });
+    setImmediate(() => runTranscriptionJob(id, sourcePath, apiKey));
+  },
+);
+
+app.get('/api/transcribe/jobs/:id', (req, res) => {
+  const job = transcriptionJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Задача распознавания не найдена или уже удалена.' });
+  return res.json(publicJob(job));
+});
+
+const jobCleanupTimer = setInterval(() => {
+  const expiry = Date.now() - 30 * 60 * 1000;
+  const abandonedExpiry = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, job] of transcriptionJobs) {
+    if (((job.status === 'done' || job.status === 'error') && job.updatedAt < expiry) || job.startedAt < abandonedExpiry) {
+      transcriptionJobs.delete(id);
+    }
+  }
+}, 5 * 60 * 1000);
+jobCleanupTimer.unref?.();
+
+app.post('/api/transcribe', upload.single('video'), async (req, res) => {
+  const sourcePath = req.file?.path;
+  const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Сервер не получил видеофайл. Проверьте, что сайт развёрнут как Web Service, а не как Static Site.', code: 'MISSING_VIDEO_FILE' });
+    if (!apiKey) return res.status(401).json({ error: 'Добавьте GROQ_API_KEY на сервере или укажите ключ в настройках сайта.', code: 'MISSING_API_KEY' });
+    return res.json(await processVideoTranscription(sourcePath, apiKey));
   } catch (error) {
     console.error(error);
-    res.status(error.status || 500).json({
+    return res.status(error.status || 500).json({
       error: error.message || 'Ошибка обработки видео.',
       code: error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR',
       provider: error.provider,
@@ -412,7 +610,6 @@ app.post('/api/transcribe', upload.single('video'), async (req, res) => {
     });
   } finally {
     if (sourcePath) await rm(sourcePath, { force: true }).catch(() => {});
-    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
