@@ -170,6 +170,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:fo
 .upload-zone strong { font-size: 14px; margin-bottom: 5px; }
 .upload-zone > span { font-size: 11px; color: var(--muted); }
 .upload-formats { max-width: 310px; margin: 16px 18px 0; color: #7d7169; font-size: 8px; line-height: 1.55; }
+.youtube-download { margin-top: 14px; padding: 13px 14px; border: 1px solid var(--line); background: rgba(239,232,220,.55); }
+.youtube-download-title { display: flex; align-items: center; gap: 7px; color: var(--red); }
+.youtube-download-title strong { font-size: 11px; }
+.youtube-download p { margin: 7px 0 10px; color: var(--muted); font-size: 8px; line-height: 1.55; }
+.youtube-download form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.youtube-download input { min-width: 0; height: 36px; border: 1px solid var(--line); background: var(--paper-light); color: var(--ink); padding: 0 10px; font-size: 10px; outline: none; }
+.youtube-download input:focus { border-color: var(--red); }
+.youtube-download button { min-height: 36px; border: 0; background: var(--navy); color: white; padding: 0 12px; cursor: pointer; font-size: 9px; font-weight: 800; }
+.youtube-download button:hover { background: #244b60; }
+.youtube-download-message { display: block; margin-top: 8px; color: var(--red); font-size: 8px; line-height: 1.45; }
 .demo-link { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--red); margin: 16px auto 13px; font-size: 11px; font-weight: 700; }
 .demo-link:hover { text-decoration: underline; }
 .privacy-note { border-top: 1px solid var(--line); display: flex; justify-content: center; align-items: center; gap: 7px; padding-top: 13px; font-size: 9px; color: var(--muted); }
@@ -494,10 +504,15 @@ footer a:hover { text-decoration: underline; }
 }
 
 @media (max-width: 560px) {
-  .brand-copy strong { font-size: 16px; }
+  .site-header { padding: 0 12px; }
+  .brand { min-width: 0; gap: 8px; }
+  .brand-wolf { width: 40px; height: 40px; flex: 0 0 auto; }
+  .brand-copy strong { font-size: clamp(12px, 3.8vw, 15px); letter-spacing: .04em; white-space: nowrap; }
+  .header-actions { flex: 0 0 auto; gap: 7px; }
   .text-button { display: none; }
-  .text-button.library-link { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; font-size: 0; }
+  .text-button.library-link { width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; font-size: 0; flex: 0 0 auto; }
   .text-button.library-link svg { width: 19px; height: 19px; }
+  .icon-button { width: 38px; height: 38px; flex: 0 0 auto; }
   .hero { padding: 45px 18px 50px; }
   .hero h1 { font-size: 43px; }
   .hero-copy > p { font-size: 14px; }
@@ -505,6 +520,8 @@ footer a:hover { text-decoration: underline; }
   .upload-card { padding: 20px; }
   .upload-zone { min-height: 205px; }
   .upload-formats { margin-left: 12px; margin-right: 12px; }
+  .youtube-download form { grid-template-columns: 1fr; }
+  .youtube-download button { width: 100%; }
   .recent-section { padding: 48px 18px 60px; }
   .section-heading small { display: none; }
   .recent-thumb { width: 56px; }

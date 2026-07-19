@@ -252,6 +252,52 @@ function UploadZone({ onFile }) {
   );
 }
 
+function YoutubeDownload() {
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [message, setMessage] = useState('');
+
+  const openSaveFrom = (event) => {
+    event.preventDefault();
+    const normalizedUrl = youtubeUrl.trim();
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(normalizedUrl);
+    } catch {
+      setMessage('Вставьте полную ссылку на видео YouTube.');
+      return;
+    }
+
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, '');
+    if (!['youtube.com', 'm.youtube.com', 'youtu.be'].includes(hostname)) {
+      setMessage('Здесь поддерживаются ссылки youtube.com и youtu.be.');
+      return;
+    }
+
+    navigator.clipboard?.writeText(normalizedUrl).catch(() => {});
+    window.open(`https://ru.savefrom.net/153kn/sf?url=${encodeURIComponent(normalizedUrl)}`, '_blank', 'noopener,noreferrer');
+    setMessage('Ссылка скопирована. Скачайте MP4 в SaveFrom и загрузите файл выше.');
+  };
+
+  return (
+    <div className="youtube-download">
+      <div className="youtube-download-title"><Play size={18} fill="currentColor" /><strong>Скачать видео с YouTube</strong></div>
+      <p>Вставьте ссылку, скачайте ролик через SaveFrom, затем загрузите полученный MP4 в Читавук. Используйте только видео, которое вам разрешено скачивать.</p>
+      <form onSubmit={openSaveFrom} noValidate>
+        <input
+          type="url"
+          value={youtubeUrl}
+          onChange={(event) => { setYoutubeUrl(event.target.value); setMessage(''); }}
+          placeholder="https://youtu.be/…"
+          aria-label="Ссылка на видео YouTube"
+        />
+        <button type="submit">Открыть SaveFrom</button>
+      </form>
+      {message && <span className="youtube-download-message">{message}</span>}
+    </div>
+  );
+}
+
 function RecentProject({ project, onOpen, onDelete }) {
   return (
     <article className="recent-card" onClick={() => onOpen(project.id)}>
@@ -297,6 +343,7 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete }) {
             <div className="free-seal"><Sparkles size={14} /> FREE</div>
           </div>
           <UploadZone onFile={onFile} />
+          <YoutubeDownload />
           <button className="demo-link" onClick={onDemo}><Play size={14} fill="currentColor" /> Открыть пример проекта</button>
           <div className="privacy-note"><KeyRound size={15} /> Видео остается в памяти вашего браузера</div>
         </div>
