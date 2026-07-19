@@ -1,0 +1,25 @@
+{
+  "name": "recnik-video",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n APP,API -c cyan,magenta \"vite\" \"node server.mjs\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "ffmpeg-static": "latest",
+    "lucide-react": "latest",
+    "multer": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  }
+}
