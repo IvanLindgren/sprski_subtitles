@@ -29,6 +29,11 @@ import { deleteVideoBlob, getVideoBlob, saveVideoBlob } from './storage';
 import { cleanWord, downloadText, formatClock, makeSrt, makeVtt } from './subtitles';
 
 const PROJECTS_KEY = 'recnik-projects-v1';
+const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(pathname) {
+  return `${API_BASE_URL}${pathname}`;
+}
 
 const DEMO_SEGMENTS = [
   { id: 'd1', start: 0, end: 4.4, text: 'Добро дошли у Београд, град који никада не мирује.' },
@@ -686,12 +691,18 @@ export default function App() {
     }
     if (!file) return notify('Сначала загрузите исходное видео');
 
+    if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) {
+      const message = 'Для Netlify не указан адрес backend-сервера. Добавьте переменную VITE_API_BASE_URL с адресом Render Web Service и запустите новый deploy.';
+      setTranscriptionError(message);
+      return notify(message);
+    }
+
     setTranscriptionError('');
     setProcessing('transcribe');
     try {
       const form = new FormData();
       form.append('video', file, file.name);
-      const response = await fetch('/api/transcribe', {
+      const response = await fetch(apiUrl('/api/transcribe'), {
         method: 'POST',
         headers: apiKey ? { 'x-groq-api-key': apiKey } : {},
         body: form,
@@ -732,7 +743,7 @@ export default function App() {
       const form = new FormData();
       form.append('video', file, file.name);
       form.append('subtitles', new Blob([makeSrt(activeProject.transcript)], { type: 'application/x-subrip' }), 'subtitles.srt');
-      const response = await fetch('/api/burn', { method: 'POST', body: form });
+      const response = await fetch(apiUrl('/api/burn'), { method: 'POST', body: form });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || 'Не удалось собрать MP4');

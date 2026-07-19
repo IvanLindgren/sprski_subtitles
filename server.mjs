@@ -11,12 +11,30 @@ const app = express();
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const clientPath = path.join(process.cwd(), 'dist');
+const allowedOrigins = new Set([
+  'https://sprskisubtitles.netlify.app',
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+  process.env.FRONTEND_ORIGIN,
+].filter(Boolean));
 
 const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 500 * 1024 * 1024 },
 });
 
+app.use((req, res, next) => {
+  const origin = req.get('origin');
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
