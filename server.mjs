@@ -63,7 +63,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key,X-Yandex-Api-Key,X-Yandex-Folder-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -89,57 +89,78 @@ function cleanTranslation(value) {
 }
 
 async function translateWordWithGroq(word, context, apiKey) {
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'openai/gpt-oss-20b',
-      temperature: 0,
-      reasoning_effort: 'low',
-      max_completion_tokens: 300,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a Serbian bilingual dictionary. Translate the supplied Serbian word as it is used in the supplied sentence. Return only a JSON object with two short string fields: ru for Russian and en for English. Preserve the meaning and prefer a dictionary form when helpful.',
+  const models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'];
+  let lastError;
+  for (const model of models) {
+    try {
+      const requestBody = {
+        model,
+        temperature: 0,
+        max_completion_tokens: 300,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a careful Serbian bilingual dictionary. Translate the supplied Serbian word as it is used in the supplied Serbian sentence. Do not interpret Serbian words as similarly spelled English words: for example, Serbian "paradajz" means tomato, not paradise. Return only a JSON object with two short string fields: ru for Russian and en for English. Prefer a dictionary form when helpful.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({ word, context }),
+          },
+        ],
+      };
+      if (model.startsWith('openai/gpt-oss-')) requestBody.reasoning_effort = 'low';
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
         },
-        {
-          role: 'user',
-          content: JSON.stringify({ word, context }),
-        },
-      ],
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || `Groq returned ${response.status}`);
-  const content = String(payload?.choices?.[0]?.message?.content || '');
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Groq did not return translation JSON');
-  const parsed = JSON.parse(jsonMatch[0]);
-  const ru = cleanTranslation(parsed.ru);
-  const en = cleanTranslation(parsed.en);
-  if (!ru || !en) throw new Error('Groq returned an incomplete translation');
-  return { ru, en, provider: 'groq' };
+        body: JSON.stringify(requestBody),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || `Groq returned ${response.status}`);
+      const content = String(payload?.choices?.[0]?.message?.content || '');
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('Groq did not return translation JSON');
+      const parsed = JSON.parse(jsonMatch[0]);
+      const ru = cleanTranslation(parsed.ru);
+      const en = cleanTranslation(parsed.en);
+      if (!ru || !en) throw new Error('Groq returned an incomplete translation');
+      return { ru, en, provider: 'groq', model };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('Groq translation failed');
 }
 
-async function translateWordWithMyMemory(word) {
+async function translateWordWithYandex(word, apiKey, folderId) {
   const translateTo = async (language) => {
-    const url = new URL('https://api.mymemory.translated.net/get');
-    url.searchParams.set('q', word);
-    url.searchParams.set('langpair', `sr|${language}`);
-    const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    const response = await fetch('https://translate.api.cloud.yandex.net/translate/v2/translate', {
+      method: 'POST',
+      headers: {
+        Authorization: `Api-Key ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        folderId,
+        sourceLanguageCode: 'sr',
+        targetLanguageCode: language,
+        format: 'PLAIN_TEXT',
+        texts: [word],
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
     const payload = await response.json().catch(() => ({}));
-    const translation = cleanTranslation(payload?.responseData?.translatedText);
-    if (!response.ok || Number(payload?.responseStatus || response.status) >= 400 || !translation) {
-      throw new Error(payload?.responseDetails || `MyMemory returned ${response.status}`);
+    const translation = cleanTranslation(payload?.translations?.[0]?.text);
+    if (!response.ok || !translation) {
+      throw new Error(payload?.message || `Yandex Translate returned ${response.status}`);
     }
     return translation;
   };
   const [ru, en] = await Promise.all([translateTo('ru'), translateTo('en')]);
-  return { ru, en, provider: 'mymemory' };
+  return { ru, en, provider: 'yandex' };
 }
 
 app.post('/api/translate', async (req, res) => {
@@ -147,26 +168,40 @@ app.post('/api/translate', async (req, res) => {
   const context = String(req.body?.context || '').replace(/\s+/g, ' ').trim().slice(0, 500);
   if (!word || word.includes(' ')) return res.status(400).json({ error: 'Передайте одно сербское слово.' });
 
-  const cacheKey = `${word.toLocaleLowerCase('sr')}|${context.toLocaleLowerCase('sr')}`;
+  const yandexApiKey = process.env.YANDEX_TRANSLATE_API_KEY || req.get('x-yandex-api-key');
+  const yandexFolderId = process.env.YANDEX_FOLDER_ID || req.get('x-yandex-folder-id');
+  const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
+  const preferredProvider = yandexApiKey && yandexFolderId ? 'yandex' : 'groq';
+  const cacheKey = `${preferredProvider}|${word.toLocaleLowerCase('sr')}|${context.toLocaleLowerCase('sr')}`;
   const cached = translationCache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
   if (translationRateLimited(req.ip || req.socket.remoteAddress || 'unknown')) {
     return res.status(429).json({ error: 'Слишком много переводов за одну минуту. Попробуйте немного позже.' });
   }
 
-  const apiKey = process.env.GROQ_API_KEY || req.get('x-groq-api-key');
   let result;
+  if (yandexApiKey && yandexFolderId) {
+    try {
+      result = await translateWordWithYandex(word, yandexApiKey, yandexFolderId);
+    } catch (error) {
+      console.warn(`[translate] Yandex unavailable, trying Groq: ${error.message}`);
+    }
+  }
   if (apiKey) {
     try {
-      result = await translateWordWithGroq(word, context, apiKey);
+      result ||= await translateWordWithGroq(word, context, apiKey);
     } catch (error) {
-      console.warn(`[translate] Groq unavailable, using MyMemory: ${error.message}`);
+      console.warn(`[translate] Groq unavailable: ${error.message}`);
     }
   }
 
   try {
-    result ||= await translateWordWithMyMemory(word);
-    translationCache.set(cacheKey, result);
+    if (!result) {
+      return res.status(503).json({
+        error: 'Переводчик не подключён. Добавьте ключ Yandex Translate и Folder ID в настройках либо проверьте ключ Groq.',
+      });
+    }
+    if (result.provider === preferredProvider) translationCache.set(cacheKey, result);
     if (translationCache.size > 2000) translationCache.delete(translationCache.keys().next().value);
     return res.json(result);
   } catch (error) {

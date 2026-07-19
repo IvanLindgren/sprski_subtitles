@@ -415,13 +415,14 @@ footer a { color: #e3b45f; text-decoration: none; white-space: nowrap; }
 footer a:hover { text-decoration: underline; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(14,19,21,.66); backdrop-filter: blur(6px); display: grid; place-items: center; padding: 20px; }
-.settings-modal { width: min(455px, 100%); background: var(--paper-light); border: 1px solid rgba(255,255,255,.25); padding: 33px 35px 30px; position: relative; box-shadow: 0 30px 80px rgba(0,0,0,.3); }
+.settings-modal { width: min(510px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--paper-light); border: 1px solid rgba(255,255,255,.25); padding: 33px 35px 30px; position: relative; box-shadow: 0 30px 80px rgba(0,0,0,.3); }
 .settings-modal::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 7px; background: repeating-linear-gradient(45deg, var(--red) 0 7px, var(--paper) 7px 11px, var(--navy) 11px 18px, var(--paper) 18px 22px); }
 .modal-close { position: absolute; top: 18px; right: 18px; padding: 5px; color: var(--muted); }
 .modal-icon { width: 51px; height: 51px; display: grid; place-items: center; color: white; background: var(--red); margin-bottom: 22px; }
 .settings-modal h2 { font-family: 'Prata', Georgia, serif; font-size: 27px; font-weight: 400; margin: 8px 0 10px; }
 .settings-modal > p { color: var(--muted); font-size: 11px; line-height: 1.65; margin: 0 0 22px; }
-.settings-modal label { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .16em; }
+.settings-modal label { display: block; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .16em; }
+.settings-modal label + label { margin-top: 11px; }
 .settings-modal label input { width: 100%; height: 43px; margin-top: 7px; border: 1px solid var(--line); background: white; padding: 0 12px; outline: 0; color: var(--ink); letter-spacing: .04em; }
 .settings-modal label input:focus { border-color: var(--red); }
 .free-info { display: flex; gap: 11px; background: #e9efe9; border-left: 3px solid #4e8160; color: #315e42; padding: 12px 13px; margin: 16px 0 22px; }
@@ -429,6 +430,9 @@ footer a:hover { text-decoration: underline; }
 .modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 .modal-actions a { color: var(--red); display: flex; align-items: center; text-decoration: none; font-size: 9px; font-weight: 700; }
 .key-guide-copy { margin-top: -8px !important; font-size: 9px !important; }
+.settings-section-title { margin: 4px 0 8px; color: var(--navy); font-size: 8px; font-weight: 800; letter-spacing: .16em; }
+.yandex-guide-copy { margin: 0 0 13px !important; color: var(--muted); font-size: 9px !important; line-height: 1.55 !important; }
+.settings-links { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 .welcome-modal { width: min(870px, 100%); min-height: 570px; background: var(--paper-light); position: relative; display: grid; grid-template-columns: 42% 58%; overflow: hidden; box-shadow: 0 35px 95px rgba(0,0,0,.36); }
 .welcome-modal::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 8px; z-index: 2; background: repeating-linear-gradient(45deg, var(--red) 0 8px, var(--paper) 8px 12px, var(--navy) 12px 20px, var(--paper) 20px 24px); }
