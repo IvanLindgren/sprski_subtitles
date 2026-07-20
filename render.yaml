@@ -11,7 +11,7 @@ services:
       - key: NODE_VERSION
         value: 22.16.0
       - key: FRONTEND_ORIGIN
-        value: https://sprskisubtitles.netlify.app
+        value: https://serbiansubtitles.netlify.app
       - key: S3_REGION
         value: auto
       - key: S3_ENDPOINT

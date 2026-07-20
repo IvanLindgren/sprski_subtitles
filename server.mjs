@@ -52,11 +52,11 @@ const yandexTranslateConfigured = Boolean(
 );
 const allowedOrigins = new Set([
   'https://sprskisubtitles.netlify.app',
+  'https://serbiansubtitles.netlify.app',
   'http://127.0.0.1:5173',
   'http://localhost:5173',
-  'https://serbiansubtitles.netlify.app/',
   process.env.FRONTEND_ORIGIN,
-].filter(Boolean));
+].filter(Boolean).map((origin) => origin.replace(/\/$/, '')));
 
 const upload = multer({
   dest: os.tmpdir(),
