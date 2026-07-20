@@ -3,7 +3,7 @@ services:
     name: citavuk-recnik
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run install:yt-dlp && npm run build
+    buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true

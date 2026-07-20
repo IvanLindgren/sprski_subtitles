@@ -21,6 +21,38 @@ const managedYtDlpPath = process.env.YOUTUBE_DL_PATH
   || path.join(process.cwd(), '.tools', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const managedYtDlpAvailable = existsSync(managedYtDlpPath);
 const ytdlp = managedYtDlpAvailable ? ytdlpExec.create(managedYtDlpPath) : ytdlpExec;
+const youtubePotProviderVersion = '1.3.1';
+const requestedPotProviderPort = Number(process.env.YOUTUBE_POT_PROVIDER_PORT || 4416);
+const youtubePotProviderPort = Number.isInteger(requestedPotProviderPort) && requestedPotProviderPort > 0
+  ? requestedPotProviderPort
+  : 4416;
+const managedPotProviderEntry = path.join(
+  process.cwd(),
+  '.tools',
+  'bgutil-ytdlp-pot-provider',
+  'server',
+  'build',
+  'main.js',
+);
+const managedPotProviderServerDir = path.dirname(path.dirname(managedPotProviderEntry));
+const managedYtDlpPluginDir = path.join(process.cwd(), '.tools', 'yt-dlp-plugins');
+const managedPotPluginArchive = path.join(managedYtDlpPluginDir, 'bgutil-ytdlp-pot-provider.zip');
+const externalPotProviderUrl = String(process.env.YOUTUBE_POT_PROVIDER_URL || '').replace(/\/$/, '');
+const youtubePotProviderUrl = externalPotProviderUrl || `http://127.0.0.1:${youtubePotProviderPort}`;
+const managedPotProviderAvailable = existsSync(managedPotProviderEntry);
+const managedPotPluginAvailable = existsSync(managedPotPluginArchive);
+const youtubePotProviderConfigured = process.env.YOUTUBE_POT_PROVIDER_ENABLED !== 'false'
+  && managedYtDlpAvailable
+  && managedPotPluginAvailable
+  && Boolean(externalPotProviderUrl || managedPotProviderAvailable);
+const youtubePotProviderState = {
+  status: youtubePotProviderConfigured ? 'starting' : 'unavailable',
+  version: null,
+  error: null,
+};
+let youtubePotProviderProcess = null;
+let youtubePotProviderStartPromise = null;
+let youtubePotProviderStopping = false;
 const publicCategories = new Set(['фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое']);
 const objectStorage = {
   endpoint: process.env.S3_ENDPOINT,
@@ -82,7 +114,17 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), ytDlpBinary: managedYtDlpAvailable, provider: 'groq', publicLibrary: publicLibraryConfigured, yandexTranslate: yandexTranslateConfigured });
+  res.json({
+    ok: true,
+    ffmpeg: Boolean(ffmpegPath),
+    ytDlpBinary: managedYtDlpAvailable,
+    poTokenProvider: youtubePotProviderState.status === 'ready',
+    poTokenProviderStatus: youtubePotProviderState.status,
+    poTokenProviderVersion: youtubePotProviderState.version,
+    provider: 'groq',
+    publicLibrary: publicLibraryConfigured,
+    yandexTranslate: yandexTranslateConfigured,
+  });
 });
 
 function translationRateLimited(ip) {
@@ -754,6 +796,98 @@ async function runTranscriptionJob(id, sourcePath, apiKey) {
   }
 }
 
+function potProviderErrorMessage(error) {
+  return String(error?.message || error || 'unknown error').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+async function pingYoutubePotProvider() {
+  const response = await fetch(`${youtubePotProviderUrl}/ping`, {
+    signal: AbortSignal.timeout(2_500),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} from ${youtubePotProviderUrl}/ping`);
+  const result = await response.json();
+  if (String(result?.version || '') !== youtubePotProviderVersion) {
+    throw new Error(`provider version ${result?.version || 'unknown'} does not match plugin ${youtubePotProviderVersion}`);
+  }
+  youtubePotProviderState.version = String(result.version);
+  return true;
+}
+
+function spawnYoutubePotProvider() {
+  if (externalPotProviderUrl || youtubePotProviderStopping) return;
+  if (youtubePotProviderProcess && youtubePotProviderProcess.exitCode === null) return;
+
+  youtubePotProviderProcess = spawn(
+    process.execPath,
+    [managedPotProviderEntry, '--port', String(youtubePotProviderPort)],
+    {
+      cwd: managedPotProviderServerDir,
+      env: process.env,
+      windowsHide: true,
+      // The provider prints generated tokens to stdout, so neither output stream may reach Render Logs.
+      stdio: ['ignore', 'ignore', 'ignore'],
+    },
+  );
+  youtubePotProviderProcess.on('error', (error) => {
+    youtubePotProviderState.status = 'error';
+    youtubePotProviderState.error = potProviderErrorMessage(error);
+    console.error(`[youtube-pot] Provider process error: ${youtubePotProviderState.error}`);
+  });
+  youtubePotProviderProcess.on('exit', (code, signal) => {
+    youtubePotProviderProcess = null;
+    if (youtubePotProviderStopping) return;
+    youtubePotProviderState.status = 'error';
+    youtubePotProviderState.error = `provider exited with code ${code ?? 'none'}, signal ${signal || 'none'}`;
+    console.error(`[youtube-pot] ${youtubePotProviderState.error}`);
+  });
+}
+
+async function startYoutubePotProvider() {
+  if (!youtubePotProviderConfigured || youtubePotProviderStopping) return false;
+  if (youtubePotProviderState.status === 'ready') {
+    if (!externalPotProviderUrl && youtubePotProviderProcess?.exitCode === null) return true;
+    try {
+      return await pingYoutubePotProvider();
+    } catch {
+      youtubePotProviderState.status = 'starting';
+    }
+  }
+  if (youtubePotProviderStartPromise) return youtubePotProviderStartPromise;
+
+  youtubePotProviderStartPromise = (async () => {
+    youtubePotProviderState.status = 'starting';
+    youtubePotProviderState.error = null;
+    spawnYoutubePotProvider();
+    let lastError;
+    for (let attempt = 1; attempt <= 30; attempt += 1) {
+      try {
+        await pingYoutubePotProvider();
+        youtubePotProviderState.status = 'ready';
+        youtubePotProviderState.error = null;
+        console.log(`[youtube-pot] Provider ${youtubePotProviderState.version} is ready at ${youtubePotProviderUrl}`);
+        return true;
+      } catch (error) {
+        lastError = error;
+        if (!externalPotProviderUrl && !youtubePotProviderProcess) spawnYoutubePotProvider();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    youtubePotProviderState.status = 'error';
+    youtubePotProviderState.error = potProviderErrorMessage(lastError);
+    console.error(`[youtube-pot] Provider did not become ready: ${youtubePotProviderState.error}`);
+    return false;
+  })().finally(() => {
+    youtubePotProviderStartPromise = null;
+  });
+
+  return youtubePotProviderStartPromise;
+}
+
+function stopYoutubePotProvider() {
+  youtubePotProviderStopping = true;
+  if (youtubePotProviderProcess?.exitCode === null) youtubePotProviderProcess.kill('SIGTERM');
+}
+
 const youtubeHosts = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'music.youtube.com']);
 
 function parseYoutubeUrl(value) {
@@ -776,14 +910,30 @@ function youtubeDownloadRateLimited(ip) {
   return false;
 }
 
-// Keep a supported embedded client as a limited fallback for videos that permit embedding.
-// Render may still be challenged because YouTube often restricts anonymous datacenter traffic;
-// failures are classified below and correlated with a safe diagnostic entry in Render Logs.
-const youtubeExtractorArgs = process.env.YOUTUBE_EXTRACTOR_ARGS || 'youtube:player_client=default,web_embedded';
+const youtubeExtractorArgsOverride = String(process.env.YOUTUBE_EXTRACTOR_ARGS || '')
+  .split(/\r?\n|\s*\|\|\s*/)
+  .map((value) => value.trim())
+  .filter(Boolean);
 const youtubeCookiesFile = process.env.YOUTUBE_COOKIES_FILE || '';
 
 function withYoutubeAuth(flags) {
-  const merged = { extractorArgs: youtubeExtractorArgs, ...flags };
+  const poTokenReady = youtubePotProviderState.status === 'ready';
+  const extractorArgs = youtubeExtractorArgsOverride.length
+    ? [...youtubeExtractorArgsOverride]
+    : poTokenReady
+      ? [
+        'youtube:player_client=mweb,web_embedded;fetch_pot=auto',
+      ]
+      : ['youtube:player_client=default,web_embedded'];
+  if (poTokenReady && !extractorArgs.some((value) => value.startsWith('youtubepot-bgutilhttp:'))) {
+    extractorArgs.push(`youtubepot-bgutilhttp:base_url=${youtubePotProviderUrl}`);
+  }
+  const merged = {
+    extractorArgs,
+    jsRuntimes: [`node:${process.execPath}`],
+    ...flags,
+  };
+  if (managedPotPluginAvailable) merged.pluginDirs = [managedYtDlpPluginDir];
   if (youtubeCookiesFile) merged.cookies = youtubeCookiesFile;
   return merged;
 }
@@ -811,11 +961,20 @@ function diagnoseYoutubeError(error) {
       message: 'Render нашёл yt-dlp, но не может запустить файл из-за отсутствия права на выполнение.',
     };
   }
+  if (/\[pot:bgutil:http\][^\n]*(?:error|failed)|error reaching (?:get|post)[^\n]*\/(?:ping|get_pot)|provider[^\n]*not (?:available|reachable)/i.test(details)) {
+    return {
+      code: 'YOUTUBE_PO_PROVIDER_UNAVAILABLE',
+      status: 502,
+      message: 'PO Token Provider запущен, но не смог получить токен от YouTube. Попробуйте ещё раз через минуту.',
+    };
+  }
   if (/sign in to confirm(?:.*)(?:not a bot|you.?re not a bot)|confirm your age.*bot|not a bot/i.test(details)) {
     return {
       code: 'YOUTUBE_BOT_CHECK',
       status: 502,
-      message: 'YouTube отклонил запрос с IP-адреса Render как автоматический. Для серверной загрузки потребуется PO Token или другой разрешённый способ получения видео.',
+      message: youtubePotProviderState.status === 'ready'
+        ? 'PO Token Provider подключён, но YouTube всё равно отклонил IP-адрес Render как автоматический. Для этого видео серверная загрузка недоступна.'
+        : 'YouTube отклонил запрос с IP-адреса Render как автоматический, а PO Token Provider сейчас недоступен. Попробуйте ещё раз после перезапуска сервера.',
     };
   }
   if (/private video/i.test(details)) return { code: 'YOUTUBE_PRIVATE', status: 403, message: 'Это приватное видео — его нельзя скачать.' };
@@ -835,7 +994,9 @@ function diagnoseYoutubeError(error) {
     return {
       code: 'YOUTUBE_PO_TOKEN_REQUIRED',
       status: 502,
-      message: 'YouTube потребовал Proof of Origin Token. Текущая конфигурация загрузчика не умеет получить его автоматически.',
+      message: youtubePotProviderState.status === 'ready'
+        ? 'PO Token Provider подключён, но не смог выдать подходящий токен для этого видео.'
+        : 'YouTube потребовал Proof of Origin Token, но локальный провайдер сейчас недоступен. Попробуйте ещё раз после перезапуска сервера.',
     };
   }
   if (/skipping unsupported client|unsupported client/i.test(details)) {
@@ -918,6 +1079,9 @@ app.post('/api/youtube/download', async (req, res) => {
   if (youtubeDownloadRateLimited(req.ip || req.socket.remoteAddress || 'unknown')) {
     return res.status(429).json({ error: 'Слишком много загрузок с YouTube за последний час. Попробуйте позже.' });
   }
+
+  const poTokenReady = await startYoutubePotProvider();
+  console.log(`[youtube:${requestId}] po-token-provider=${poTokenReady ? 'ready' : youtubePotProviderState.status}`);
 
   let tempDir;
   try {
@@ -1153,6 +1317,22 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: 'Непредвиденная ошибка сервера.' });
 });
 
-app.listen(port, host, () => {
+const httpServer = app.listen(port, host, () => {
   console.log(`Сайт запущен: http://${host}:${port}`);
 });
+
+startYoutubePotProvider().catch((error) => {
+  youtubePotProviderState.status = 'error';
+  youtubePotProviderState.error = potProviderErrorMessage(error);
+  console.error(`[youtube-pot] Startup failed: ${youtubePotProviderState.error}`);
+});
+
+function shutdown(signal) {
+  console.log(`[server] ${signal}: stopping HTTP server and PO Token Provider`);
+  stopYoutubePotProvider();
+  httpServer.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));

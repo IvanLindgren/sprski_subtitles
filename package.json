@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -n APP,API -c cyan,magenta \"vite\" \"node server.mjs\"",
-    "build": "node scripts/install-yt-dlp.mjs && vite build",
+    "build": "node scripts/install-yt-dlp.mjs && node scripts/install-youtube-pot.mjs && vite build",
     "install:yt-dlp": "node scripts/install-yt-dlp.mjs",
+    "install:youtube-tools": "node scripts/install-yt-dlp.mjs && node scripts/install-youtube-pot.mjs",
     "preview": "vite preview",
     "server": "node server.mjs",
     "start": "node server.mjs"
