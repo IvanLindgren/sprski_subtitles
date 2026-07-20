@@ -124,7 +124,8 @@ function downloadYoutubeVideo(url, onProgress) {
         let payload = {};
         try { payload = JSON.parse(reader.result || '{}'); } catch { payload = {}; }
         const diagnostic = [payload.code, payload.requestId && `запрос ${payload.requestId}`].filter(Boolean).join(' · ');
-        const error = new Error(`${payload.error || `Сервер вернул ошибку ${request.status}.`}${diagnostic ? ` Код диагностики: ${diagnostic}.` : ''}`);
+        const providerDetails = payload.diagnostic ? ` Причина yt-dlp: ${payload.diagnostic}` : '';
+        const error = new Error(`${payload.error || `Сервер вернул ошибку ${request.status}.`}${diagnostic ? ` Код диагностики: ${diagnostic}.` : ''}${providerDetails}`);
         error.status = request.status;
         error.code = payload.code;
         error.requestId = payload.requestId;

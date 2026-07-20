@@ -860,6 +860,18 @@ function safeYoutubeDiagnostic(error) {
   return `${cleaned.slice(0, 1500)}\n...[diagnostic truncated]...\n${cleaned.slice(-4300)}`;
 }
 
+function publicYoutubeDiagnostic(error) {
+  const lines = safeYoutubeDiagnostic(error).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const errorLine = lines.filter((line) => /^ERROR:/i.test(line)).at(-1);
+  const warningLine = lines.filter((line) => /^WARNING:/i.test(line)).at(-1);
+  const selected = errorLine || warningLine || '';
+  return selected
+    .replace(/^ERROR:\s*/i, '')
+    .replace(/^WARNING:\s*/i, '')
+    .replace(/[/\\](?:opt|tmp|var|home|workspace)[/\\][^\s]+/gi, '[server path]')
+    .slice(0, 500);
+}
+
 function youtubeFailure(error, stage, requestId) {
   const diagnosis = diagnoseYoutubeError(error);
   const diagnostic = safeYoutubeDiagnostic(error);
@@ -869,6 +881,7 @@ function youtubeFailure(error, stage, requestId) {
   wrapped.status = diagnosis.status;
   wrapped.code = diagnosis.code;
   wrapped.requestId = requestId;
+  wrapped.diagnostic = publicYoutubeDiagnostic(error);
   wrapped.youtubeLogged = true;
   return wrapped;
 }
@@ -967,6 +980,7 @@ app.post('/api/youtube/download', async (req, res) => {
       error: error.message || 'Не удалось скачать видео с YouTube.',
       code: error.code || 'YOUTUBE_SERVER_ERROR',
       requestId,
+      diagnostic: error.diagnostic || '',
     });
   }
 });
