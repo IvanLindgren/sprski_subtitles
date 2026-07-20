@@ -531,7 +531,7 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
         <div className="transcribe-callout">
           <div className="callout-icon"><WandSparkles size={22} /></div>
           <div><strong>Видео готово к распознаванию</strong><span>Читавук распознает сербскую кириллицу или latinica и добавит точные таймкоды.</span></div>
-          <button className="primary-button" onClick={onTranscribe} disabled={Boolean(processing)}>
+          <button className="primary-button" onClick={() => onTranscribe()} disabled={Boolean(processing)}>
             {processing === 'transcribe' ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={17} />}
             {processing === 'transcribe' ? 'Слушаем речь…' : 'Создать субтитры'}
           </button>
@@ -576,7 +576,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
         {transcript.length > 0 && (
           <div className="panel-actions">
             <button className="publish-action" onClick={onPublish} disabled={processing === 'publish'} title="Опубликовать анонимно"><Globe2 size={15} /> Опубликовать</button>
-            <button onClick={onRetranscribe} disabled={processing === 'transcribe'} title="Распознать заново"><Sparkles size={15} /> Повторить</button>
+            <button onClick={() => onRetranscribe()} disabled={processing === 'transcribe'} title="Распознать заново"><Sparkles size={15} /> Повторить</button>
             <button onClick={onDownloadVtt}><Download size={15} /> VTT</button>
             <button onClick={onDownloadSrt}><Download size={15} /> SRT</button>
           </div>
@@ -1222,13 +1222,17 @@ export default function App() {
   }));
 
   const transcribe = async (fileOverride, projectId = activeId) => {
-    let file = fileOverride || videoFile;
+    const target = projects.find((project) => project.id === projectId);
+    let file = fileOverride instanceof Blob ? fileOverride : videoFile;
     if (!file && projectId) {
-      const target = projects.find((project) => project.id === projectId);
       const blob = await getVideoBlob(projectId).catch(() => null);
       if (blob && target) file = new File([blob], target.name, { type: target.type });
     }
-    if (!file) return notify('Сначала загрузите исходное видео');
+    if (!(file instanceof Blob)) {
+      const message = 'Исходное видео не найдено. Загрузите файл заново.';
+      setTranscriptionError(message);
+      return notify(message);
+    }
 
     if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) {
       const message = 'Для Netlify не указан адрес backend-сервера. Добавьте переменную VITE_API_BASE_URL с адресом Render Web Service и запустите новый deploy.';
@@ -1241,7 +1245,7 @@ export default function App() {
     setTranscriptionProgress({ percent: 0, stage: 'Подготавливаем видео к загрузке', etaSeconds: null });
     try {
       const form = new FormData();
-      form.append('video', file, file.name);
+      form.append('video', file, file.name || target?.name || 'video.mp4');
       const job = await startTranscriptionJob(form, apiKey, setTranscriptionProgress);
       const payload = await waitForTranscriptionJob(job.id, setTranscriptionProgress);
       const transcript = normalizeTranscription(payload);
