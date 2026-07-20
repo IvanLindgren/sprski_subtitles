@@ -123,8 +123,11 @@ function downloadYoutubeVideo(url, onProgress) {
       reader.onload = () => {
         let payload = {};
         try { payload = JSON.parse(reader.result || '{}'); } catch { payload = {}; }
-        const error = new Error(payload.error || `Сервер вернул ошибку ${request.status}.`);
+        const diagnostic = [payload.code, payload.requestId && `запрос ${payload.requestId}`].filter(Boolean).join(' · ');
+        const error = new Error(`${payload.error || `Сервер вернул ошибку ${request.status}.`}${diagnostic ? ` Код диагностики: ${diagnostic}.` : ''}`);
         error.status = request.status;
+        error.code = payload.code;
+        error.requestId = payload.requestId;
         reject(error);
       };
       reader.onerror = () => reject(new Error(`Сервер вернул ошибку ${request.status}.`));

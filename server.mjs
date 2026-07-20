@@ -772,11 +772,10 @@ function youtubeDownloadRateLimited(ip) {
   return false;
 }
 
-// YouTube blocks datacenter IPs (like Render's) and asks the "default" clients to prove they are
-// not a bot. The TV client historically does not require that proof-of-origin token, so we let
-// yt-dlp fall back to it — this is what makes downloads work from a cloud host without cookies.
-// If YOUTUBE_COOKIES_FILE is provided it is used as well, which is the fully reliable path.
-const youtubeExtractorArgs = 'youtube:player_client=default,tv_embedded';
+// Keep a supported embedded client as a limited fallback for videos that permit embedding.
+// Render may still be challenged because YouTube often restricts anonymous datacenter traffic;
+// failures are classified below and correlated with a safe diagnostic entry in Render Logs.
+const youtubeExtractorArgs = process.env.YOUTUBE_EXTRACTOR_ARGS || 'youtube:player_client=default,web_embedded';
 const youtubeCookiesFile = process.env.YOUTUBE_COOKIES_FILE || '';
 
 function withYoutubeAuth(flags) {
@@ -785,17 +784,93 @@ function withYoutubeAuth(flags) {
   return merged;
 }
 
-function friendlyYoutubeError(error) {
-  const details = String(error?.stderr || error?.message || '');
+function youtubeErrorDetails(error) {
+  return [error?.stderr, error?.stdout, error?.stderr ? null : error?.message]
+    .filter(Boolean)
+    .map((value) => String(value))
+    .join('\n');
+}
+
+function diagnoseYoutubeError(error) {
+  const details = youtubeErrorDetails(error);
   if (/sign in to confirm(?:.*)(?:not a bot|you.?re not a bot)|confirm your age.*bot|not a bot/i.test(details)) {
-    return 'YouTube заблокировал скачивание с сервера (защита от ботов). Скачайте ролик вручную через SaveFrom и загрузите MP4 сами.';
+    return {
+      code: 'YOUTUBE_BOT_CHECK',
+      status: 502,
+      message: 'YouTube отклонил запрос с IP-адреса Render как автоматический. Для серверной загрузки потребуется PO Token или другой разрешённый способ получения видео.',
+    };
   }
-  if (/private video/i.test(details)) return 'Это приватное видео — его нельзя скачать.';
-  if (/video unavailable|has been removed|no longer available|not available/i.test(details)) return 'Видео недоступно, удалено или заблокировано в этом регионе.';
-  if (/sign in to confirm your age|age[- ]restricted/i.test(details)) return 'Видео имеет возрастное ограничение и недоступно без входа в аккаунт.';
-  if (/this live event|premieres in|is a live stream/i.test(details)) return 'Скачивание прямых трансляций пока не поддерживается.';
-  if (/timed out|timeout/i.test(details)) return 'YouTube отвечал слишком долго. Попробуйте ещё раз.';
-  return 'Не удалось скачать видео с YouTube. Попробуйте другую ссылку или скачайте ролик вручную через SaveFrom.';
+  if (/private video/i.test(details)) return { code: 'YOUTUBE_PRIVATE', status: 403, message: 'Это приватное видео — его нельзя скачать.' };
+  if (/sign in to confirm your age|age[- ]restricted/i.test(details)) {
+    return { code: 'YOUTUBE_AGE_RESTRICTED', status: 403, message: 'Видео имеет возрастное ограничение и недоступно без входа в аккаунт.' };
+  }
+  if (/video unavailable|has been removed|no longer available|not available/i.test(details)) {
+    return { code: 'YOUTUBE_UNAVAILABLE', status: 404, message: 'Видео недоступно, удалено или заблокировано в регионе сервера.' };
+  }
+  if (/this live event|premieres in|is a live stream/i.test(details)) {
+    return { code: 'YOUTUBE_LIVE_UNSUPPORTED', status: 400, message: 'Скачивание прямых трансляций пока не поддерживается.' };
+  }
+  if (/timed out|timeout/i.test(details)) {
+    return { code: 'YOUTUBE_TIMEOUT', status: 504, message: 'YouTube отвечал слишком долго. Попробуйте ещё раз.' };
+  }
+  if (/requires?(?: a)? po[_ -]?token|po[_ -]?token (?:is )?(?:required|missing|not provided)|no po[_ -]?token (?:was )?provided|without (?:a )?po[_ -]?token/i.test(details)) {
+    return {
+      code: 'YOUTUBE_PO_TOKEN_REQUIRED',
+      status: 502,
+      message: 'YouTube потребовал Proof of Origin Token. Текущая конфигурация загрузчика не умеет получить его автоматически.',
+    };
+  }
+  if (/skipping unsupported client|unsupported client/i.test(details)) {
+    return {
+      code: 'YOUTUBE_UNSUPPORTED_CLIENT',
+      status: 500,
+      message: 'Установленная версия yt-dlp не поддерживает выбранный профиль YouTube-клиента.',
+    };
+  }
+  if (/http error 403|forbidden/i.test(details)) {
+    return {
+      code: 'YOUTUBE_FORBIDDEN',
+      status: 502,
+      message: 'YouTube запретил загрузку с сервера Render (HTTP 403). Вероятна блокировка IP-адреса или отсутствие PO Token.',
+    };
+  }
+  return {
+    code: 'YOUTUBE_EXTRACTOR_ERROR',
+    status: 502,
+    message: 'yt-dlp не смог получить данные видео. Точная причина записана в Render Logs по номеру запроса.',
+  };
+}
+
+function safeYoutubeDiagnostic(error) {
+  const cleaned = youtubeErrorDetails(error)
+    .replace(/https?:\/\/[^\s"'<>]+/gi, (value) => {
+      try {
+        const parsed = new URL(value);
+        const videoId = parsed.searchParams.get('v');
+        const port = parsed.port ? `:${parsed.port}` : '';
+        return `${parsed.protocol}//${parsed.hostname}${port}${parsed.pathname}${videoId ? `?v=${videoId}` : ''}`;
+      } catch {
+        return '[url removed]';
+      }
+    })
+    .replace(/(['"]?--cookies['"]?\s*,?\s*)['"][^'"]+['"]/gi, '$1[removed]')
+    .replace(/\b(?:gsk_|AQVN)[A-Za-z0-9_-]+\b/g, '[secret removed]')
+    .replace(/(cookie|authorization|po[_ -]?token|signature|sig)\s*[:=]\s*[^\s,;]+/gi, '$1=[removed]');
+  if (cleaned.length <= 6000) return cleaned;
+  return `${cleaned.slice(0, 1500)}\n...[diagnostic truncated]...\n${cleaned.slice(-4300)}`;
+}
+
+function youtubeFailure(error, stage, requestId) {
+  const diagnosis = diagnoseYoutubeError(error);
+  const diagnostic = safeYoutubeDiagnostic(error);
+  console.error(`[youtube:${requestId}] stage=${stage} code=${diagnosis.code} status=${diagnosis.status}`);
+  if (diagnostic) console.error(`[youtube:${requestId}] yt-dlp diagnostic:\n${diagnostic}`);
+  const wrapped = new Error(diagnosis.message, { cause: error });
+  wrapped.status = diagnosis.status;
+  wrapped.code = diagnosis.code;
+  wrapped.requestId = requestId;
+  wrapped.youtubeLogged = true;
+  return wrapped;
 }
 
 function asciiFallbackFilename(title, extension) {
@@ -804,6 +879,7 @@ function asciiFallbackFilename(title, extension) {
 }
 
 app.post('/api/youtube/download', async (req, res) => {
+  const requestId = randomUUID().slice(0, 8);
   const url = parseYoutubeUrl(req.body?.url);
   if (!url) return res.status(400).json({ error: 'Вставьте полную ссылку на видео youtube.com или youtu.be.' });
   if (youtubeDownloadRateLimited(req.ip || req.socket.remoteAddress || 'unknown')) {
@@ -816,14 +892,12 @@ app.post('/api/youtube/download', async (req, res) => {
     try {
       info = await ytdlp(url, withYoutubeAuth({
         dumpSingleJson: true,
-        noWarnings: true,
+        verbose: true,
         noPlaylist: true,
         skipDownload: true,
       }), { timeout: 40_000 });
     } catch (error) {
-      const notFoundError = new Error(friendlyYoutubeError(error));
-      notFoundError.status = 404;
-      throw notFoundError;
+      throw youtubeFailure(error, 'metadata', requestId);
     }
     if (info?.is_live) {
       const liveError = new Error('Скачивание прямых трансляций пока не поддерживается.');
@@ -847,13 +921,11 @@ app.post('/api/youtube/download', async (req, res) => {
         mergeOutputFormat: 'mp4',
         ffmpegLocation: ffmpegPath,
         noPlaylist: true,
-        noWarnings: true,
+        verbose: true,
         noCheckCertificates: true,
       }), { timeout: 8 * 60 * 1000 });
     } catch (error) {
-      const downloadError = new Error(friendlyYoutubeError(error));
-      downloadError.status = 502;
-      throw downloadError;
+      throw youtubeFailure(error, 'download', requestId);
     }
 
     const files = await readdir(tempDir);
@@ -886,9 +958,16 @@ app.post('/api/youtube/download', async (req, res) => {
     stream.pipe(res);
   } catch (error) {
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-    console.error('Не удалось скачать видео с YouTube:', error);
+    if (!error.youtubeLogged) {
+      console.error(`[youtube:${requestId}] stage=server code=${error.code || 'YOUTUBE_SERVER_ERROR'} status=${error.status || 502}`);
+      console.error(`[youtube:${requestId}] diagnostic:\n${safeYoutubeDiagnostic(error)}`);
+    }
     if (res.headersSent) return res.end();
-    return res.status(error.status || 502).json({ error: error.message || friendlyYoutubeError(error) });
+    return res.status(error.status || 502).json({
+      error: error.message || 'Не удалось скачать видео с YouTube.',
+      code: error.code || 'YOUTUBE_SERVER_ERROR',
+      requestId,
+    });
   }
 });
 
