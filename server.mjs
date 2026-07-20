@@ -922,7 +922,10 @@ function withYoutubeAuth(flags) {
     ? [...youtubeExtractorArgsOverride]
     : poTokenReady
       ? [
-        'youtube:player_client=mweb,web_embedded;fetch_pot=auto',
+        // Render IPs may be rejected while fetching the public watch page. Ask the provider for
+        // a Player token before the InnerTube request and avoid that page, while keeping the
+        // client-config request so yt-dlp can obtain the Visitor Data required for GVS tokens.
+        'youtube:player_client=mweb;fetch_pot=always;player_skip=webpage',
       ]
       : ['youtube:player_client=default,web_embedded'];
   if (poTokenReady && !extractorArgs.some((value) => value.startsWith('youtubepot-bgutilhttp:'))) {
