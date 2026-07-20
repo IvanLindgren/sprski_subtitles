@@ -785,10 +785,10 @@ function withYoutubeAuth(flags) {
 }
 
 function youtubeErrorDetails(error) {
-  return [error?.stderr, error?.stdout, error?.stderr ? null : error?.message]
-    .filter(Boolean)
-    .map((value) => String(value))
-    .join('\n');
+  const values = [error?.stderr, error?.stdout, error?.message]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  return [...new Set(values)].join('\n');
 }
 
 function diagnoseYoutubeError(error) {
@@ -865,7 +865,8 @@ function publicYoutubeDiagnostic(error) {
   const lines = safeYoutubeDiagnostic(error).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const errorLine = lines.filter((line) => /^ERROR:/i.test(line)).at(-1);
   const warningLine = lines.filter((line) => /^WARNING:/i.test(line)).at(-1);
-  const selected = errorLine || warningLine || '';
+  const processLine = lines.filter((line) => /sign in|not a bot|http error|forbidden|unavailable|po[_ -]?token|spawn|enoent|eacces|permission denied|command failed|exit code|timed out|timeout|failed/i.test(line)).at(-1);
+  const selected = errorLine || warningLine || processLine || '';
   return selected
     .replace(/^ERROR:\s*/i, '')
     .replace(/^WARNING:\s*/i, '')
