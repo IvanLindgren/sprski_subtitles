@@ -90,6 +90,52 @@ function startTranscriptionJob(form, apiKey, onProgress) {
   });
 }
 
+function downloadYoutubeVideo(url, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', apiUrl('/api/youtube/download'));
+    request.setRequestHeader('Content-Type', 'application/json');
+    request.responseType = 'blob';
+    request.timeout = 10 * 60 * 1000;
+    request.onprogress = (event) => {
+      if (!event.lengthComputable) {
+        onProgress({ percent: 5, stage: 'Скачиваем видео с YouTube на сервер', etaSeconds: null });
+        return;
+      }
+      onProgress({
+        percent: Math.round((event.loaded / event.total) * 100),
+        stage: 'Передаём видео с сервера в браузер',
+        etaSeconds: null,
+      });
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        const disposition = request.getResponseHeader('Content-Disposition') || '';
+        const titleHeader = request.getResponseHeader('X-Video-Title');
+        const nameMatch = disposition.match(/filename="([^"]+)"/);
+        const filename = nameMatch ? nameMatch[1] : 'youtube-video.mp4';
+        let title = filename;
+        try { if (titleHeader) title = decodeURIComponent(titleHeader); } catch { title = filename; }
+        resolve({ blob: request.response, filename, title });
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        let payload = {};
+        try { payload = JSON.parse(reader.result || '{}'); } catch { payload = {}; }
+        const error = new Error(payload.error || `Сервер вернул ошибку ${request.status}.`);
+        error.status = request.status;
+        reject(error);
+      };
+      reader.onerror = () => reject(new Error(`Сервер вернул ошибку ${request.status}.`));
+      reader.readAsText(request.response);
+    };
+    request.onerror = () => reject(new Error('Соединение с сервером прервалось во время скачивания видео.'));
+    request.ontimeout = () => reject(new Error('Скачивание видео с YouTube заняло больше десяти минут и было остановлено.'));
+    request.send(JSON.stringify({ url }));
+  });
+}
+
 async function waitForTranscriptionJob(id, onProgress) {
   const deadline = Date.now() + 30 * 60 * 1000;
   let failedPolls = 0;
@@ -272,28 +318,39 @@ function UploadZone({ onFile }) {
   );
 }
 
-function YoutubeDownload() {
+function parseYoutubeUrlClient(value) {
+  try {
+    const parsedUrl = new URL(value.trim());
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, '');
+    if (!['youtube.com', 'm.youtube.com', 'youtu.be', 'music.youtube.com'].includes(hostname)) return null;
+    return parsedUrl.toString();
+  } catch {
+    return null;
+  }
+}
+
+function YoutubeDownload({ onImport, busy }) {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [message, setMessage] = useState('');
 
-  const openSaveFrom = (event) => {
+  const submit = (event) => {
     event.preventDefault();
-    const normalizedUrl = youtubeUrl.trim();
-    let parsedUrl;
-
-    try {
-      parsedUrl = new URL(normalizedUrl);
-    } catch {
-      setMessage('Вставьте полную ссылку на видео YouTube.');
+    if (busy) return;
+    const normalizedUrl = parseYoutubeUrlClient(youtubeUrl);
+    if (!normalizedUrl) {
+      setMessage('Вставьте полную ссылку youtube.com или youtu.be.');
       return;
     }
+    setMessage('');
+    onImport(normalizedUrl);
+  };
 
-    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, '');
-    if (!['youtube.com', 'm.youtube.com', 'youtu.be'].includes(hostname)) {
-      setMessage('Здесь поддерживаются ссылки youtube.com и youtu.be.');
+  const openSaveFrom = () => {
+    const normalizedUrl = parseYoutubeUrlClient(youtubeUrl);
+    if (!normalizedUrl) {
+      setMessage('Вставьте полную ссылку youtube.com или youtu.be.');
       return;
     }
-
     navigator.clipboard?.writeText(normalizedUrl).catch(() => {});
     window.open(`https://ru.savefrom.net/153kn/sf?url=${encodeURIComponent(normalizedUrl)}`, '_blank', 'noopener,noreferrer');
     setMessage('Ссылка скопирована. Скачайте MP4 в SaveFrom и загрузите файл выше.');
@@ -301,18 +358,22 @@ function YoutubeDownload() {
 
   return (
     <div className="youtube-download">
-      <div className="youtube-download-title"><Play size={18} fill="currentColor" /><strong>Скачать видео с YouTube</strong></div>
-      <p>Вставьте ссылку, скачайте ролик через SaveFrom, затем загрузите полученный MP4 в Читавук. Используйте только видео, которое вам разрешено скачивать.</p>
-      <form onSubmit={openSaveFrom} noValidate>
+      <div className="youtube-download-title"><Play size={18} fill="currentColor" /><strong>Взять видео с YouTube</strong></div>
+      <p>Вставьте ссылку — Читавук сам скачает ролик и начнёт распознавание. Используйте только видео, которое вам разрешено скачивать.</p>
+      <form onSubmit={submit} noValidate>
         <input
           type="url"
           value={youtubeUrl}
           onChange={(event) => { setYoutubeUrl(event.target.value); setMessage(''); }}
           placeholder="https://youtu.be/…"
           aria-label="Ссылка на видео YouTube"
+          disabled={busy}
         />
-        <button type="submit">Открыть SaveFrom</button>
+        <button type="submit" disabled={busy}>{busy ? 'Скачиваем…' : 'Скачать и распознать'}</button>
       </form>
+      <button type="button" className="youtube-download-fallback" onClick={openSaveFrom} disabled={busy}>
+        Не получилось? Скачать вручную через SaveFrom
+      </button>
       {message && <span className="youtube-download-message">{message}</span>}
     </div>
   );
@@ -341,7 +402,7 @@ function RecentProject({ project, onOpen, onDelete }) {
   );
 }
 
-function Landing({ onFile, onDemo, projects, onOpen, onDelete }) {
+function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, youtubeBusy }) {
   return (
     <main className="landing">
       <div className="side-ornament side-ornament--left"><PatternBand vertical /></div>
@@ -363,7 +424,7 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete }) {
             <div className="free-seal"><Sparkles size={14} /> FREE</div>
           </div>
           <UploadZone onFile={onFile} />
-          <YoutubeDownload />
+          <YoutubeDownload onImport={onYoutubeImport} busy={youtubeBusy} />
           <button className="demo-link" onClick={onDemo}><Play size={14} fill="currentColor" /> Открыть пример проекта</button>
           <div className="privacy-note"><KeyRound size={15} /> Видео остается в памяти вашего браузера</div>
         </div>
@@ -999,9 +1060,9 @@ function remainingLabel(seconds) {
 
 function ProcessingBanner({ kind, progress }) {
   if (!kind) return null;
-  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : 'Распознаём сербскую речь';
-  const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : 'Извлекаем звук и расставляем таймкоды…';
-  if (kind === 'transcribe' && progress) {
+  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Распознаём сербскую речь';
+  const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : kind === 'youtube' ? 'Загружаем ролик на сервер и передаём его в браузер…' : 'Извлекаем звук и расставляем таймкоды…';
+  if ((kind === 'transcribe' || kind === 'youtube') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
     const remaining = remainingLabel(progress.etaSeconds);
     return (
@@ -1067,19 +1128,19 @@ export default function App() {
     });
   };
 
-  const createProject = async (file) => {
+  const createProject = async (file, nameOverride) => {
     if (!file.type.startsWith('video/') && !/\.(mp4|mov|mkv|avi|webm|m4v)$/i.test(file.name)) {
       notify('Выберите видеофайл');
-      return;
+      return null;
     }
     if (file.size > 500 * 1024 * 1024) {
       notify('Файл больше 500 МБ');
-      return;
+      return null;
     }
     const id = crypto.randomUUID();
     const project = {
       id,
-      name: file.name,
+      name: nameOverride || file.name,
       size: file.size,
       type: file.type || 'video',
       createdAt: Date.now(),
@@ -1095,6 +1156,7 @@ export default function App() {
     } catch {
       notify('Видео открыто, но браузер не смог сохранить его надолго');
     }
+    return id;
   };
 
   const openDemo = () => {
@@ -1149,17 +1211,18 @@ export default function App() {
     }
   };
 
-  const updateProject = (patchOrUpdater) => setProjects((current) => current.map((project) => {
-    if (project.id !== activeId) return project;
+  const updateProject = (patchOrUpdater, id = activeId) => setProjects((current) => current.map((project) => {
+    if (project.id !== id) return project;
     const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(project) : patchOrUpdater;
     return { ...project, ...patch, updatedAt: Date.now() };
   }));
 
-  const transcribe = async () => {
-    let file = videoFile;
-    if (!file && activeId) {
-      const blob = await getVideoBlob(activeId).catch(() => null);
-      if (blob) file = new File([blob], activeProject.name, { type: activeProject.type });
+  const transcribe = async (fileOverride, projectId = activeId) => {
+    let file = fileOverride || videoFile;
+    if (!file && projectId) {
+      const target = projects.find((project) => project.id === projectId);
+      const blob = await getVideoBlob(projectId).catch(() => null);
+      if (blob && target) file = new File([blob], target.name, { type: target.type });
     }
     if (!file) return notify('Сначала загрузите исходное видео');
 
@@ -1180,7 +1243,7 @@ export default function App() {
       const transcript = normalizeTranscription(payload);
       if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость и язык видео.');
       setTranscriptionProgress({ percent: 100, stage: 'Субтитры готовы', etaSeconds: 0 });
-      updateProject({ transcript });
+      updateProject({ transcript }, projectId);
       notify(`Готово: ${transcript.length} фрагментов`);
       await wait(700);
     } catch (error) {
@@ -1191,6 +1254,33 @@ export default function App() {
       setProcessing(null);
       setTranscriptionProgress(null);
     }
+  };
+
+  const importFromYoutube = async (url) => {
+    if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) {
+      const message = 'Для Netlify не указан адрес backend-сервера. Добавьте переменную VITE_API_BASE_URL с адресом Render Web Service и запустите новый deploy.';
+      notify(message);
+      return;
+    }
+    setTranscriptionError('');
+    setProcessing('youtube');
+    setTranscriptionProgress({ percent: 0, stage: 'Скачиваем видео с YouTube на сервер', etaSeconds: null });
+    let downloaded;
+    try {
+      downloaded = await downloadYoutubeVideo(url, setTranscriptionProgress);
+    } catch (error) {
+      setProcessing(null);
+      setTranscriptionProgress(null);
+      setTranscriptionError(error.message);
+      notify(error.message);
+      return;
+    }
+    setProcessing(null);
+    setTranscriptionProgress(null);
+    const file = new File([downloaded.blob], downloaded.filename, { type: downloaded.blob.type || 'video/mp4' });
+    const id = await createProject(file, downloaded.title);
+    if (!id) return;
+    await transcribe(file, id);
   };
 
   const burnVideo = async (currentFile) => {
@@ -1318,7 +1408,15 @@ export default function App() {
       ) : page === 'library' ? (
         <PublicLibrary refreshToken={libraryRefresh} notify={notify} />
       ) : (
-        <Landing projects={projects} onFile={createProject} onDemo={openDemo} onOpen={openProject} onDelete={deleteProject} />
+        <Landing
+          projects={projects}
+          onFile={createProject}
+          onDemo={openDemo}
+          onOpen={openProject}
+          onDelete={deleteProject}
+          onYoutubeImport={importFromYoutube}
+          youtubeBusy={processing === 'youtube'}
+        />
       )}
       <footer>
         <span>ЧИТАВУК-РЕЧНИК, 2026</span>

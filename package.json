@@ -22,6 +22,7 @@
     "multer": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "yt-dlp-exec": "latest"
   }
 }

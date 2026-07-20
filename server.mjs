@@ -2,12 +2,13 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import ffmpegPath from 'ffmpeg-static';
+import ytdlp from 'yt-dlp-exec';
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Upload as S3Upload } from '@aws-sdk/lib-storage';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -45,6 +46,7 @@ const publicationAttempts = new Map();
 const transcriptionJobs = new Map();
 const translationAttempts = new Map();
 const translationCache = new Map();
+const youtubeDownloadAttempts = new Map();
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
 );
@@ -67,7 +69,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,X-Video-Title');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
@@ -503,6 +505,27 @@ async function transcribeWithFallback(audio, apiKey, filename = 'speech.ogg') {
   }
 }
 
+function probeDuration(sourcePath) {
+  return new Promise((resolve) => {
+    const process = spawn(ffmpegPath, ['-hide_banner', '-i', sourcePath], { windowsHide: true });
+    let stderr = '';
+    process.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    process.on('error', () => resolve(0));
+    process.on('close', () => {
+      const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      resolve(match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : 0);
+    });
+  });
+}
+
+function pickAudioBitrateKbps(durationSeconds) {
+  const targetBytes = 23 * 1024 * 1024; // stay safely under Groq's ~24.5 MB request limit
+  const steps = [24, 32, 40, 48, 64, 80, 96, 128];
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return steps[0];
+  const affordableKbps = Math.floor((targetBytes * 8) / durationSeconds / 1000);
+  return steps.filter((step) => step <= affordableKbps).at(-1) || steps[0];
+}
+
 function secondsLabel(value) {
   if (!Number.isFinite(value) || value < 0) return 'неизвестно';
   if (value < 60) return `${Math.max(1, Math.round(value))} с`;
@@ -567,13 +590,84 @@ function runEstimatedStage(task, { from, to, expectedSeconds, onUpdate, stage })
     .finally(() => clearInterval(timer));
 }
 
+// Whisper occasionally decides a stretch of real speech is silence/noise and skips it entirely,
+// which shows up as subtitles starting late (e.g. 0:30 into the video) or long silent gaps in the
+// middle. We detect those gaps against the known audio duration and re-transcribe just those
+// windows on their own — short, isolated clips are much less likely to be misjudged as silence.
+async function fillTranscriptionGaps(payload, audioPath, tempDir, apiKey, totalDuration, onUpdate = () => {}) {
+  const GAP_THRESHOLD_SECONDS = 12;
+  const MAX_GAPS = 6;
+  const MAX_GAP_CLIP_SECONDS = 90;
+  const PADDING_SECONDS = 1;
+
+  const segments = (payload.segments || []).slice().sort((left, right) => Number(left.start) - Number(right.start));
+  const gaps = [];
+  let cursor = 0;
+  for (const segment of segments) {
+    const start = Number(segment.start) || 0;
+    if (start - cursor >= GAP_THRESHOLD_SECONDS) gaps.push({ start: cursor, end: start });
+    cursor = Math.max(cursor, Number(segment.end) || start);
+  }
+  if (totalDuration && totalDuration - cursor >= GAP_THRESHOLD_SECONDS) {
+    gaps.push({ start: cursor, end: totalDuration });
+  }
+  if (!gaps.length) return payload;
+
+  const gapsToCheck = gaps
+    .slice()
+    .sort((left, right) => (right.end - right.start) - (left.end - left.start))
+    .slice(0, MAX_GAPS);
+
+  const recovered = [];
+  for (let index = 0; index < gapsToCheck.length; index += 1) {
+    const gap = gapsToCheck[index];
+    onUpdate({
+      stage: `Проверяем пропуск в субтитрах (${index + 1}/${gapsToCheck.length})`,
+      etaSeconds: (gapsToCheck.length - index) * 12,
+    });
+    const clipStart = Math.max(0, gap.start - PADDING_SECONDS);
+    const clipDuration = Math.min(MAX_GAP_CLIP_SECONDS, gap.end - clipStart + PADDING_SECONDS);
+    try {
+      const clipPath = path.join(tempDir, `gap-${index}.ogg`);
+      await runFfmpeg([
+        '-y',
+        '-ss', String(clipStart),
+        '-t', String(clipDuration),
+        '-i', audioPath,
+        '-af', 'asetpts=PTS-STARTPTS',
+        '-c:a', 'libopus',
+        '-b:a', '32k',
+        clipPath,
+      ]);
+      const clipPayload = await transcribeWithFallback(await readFile(clipPath), apiKey, `gap-${index}.ogg`);
+      for (const segment of clipPayload.segments || []) {
+        const start = clipStart + (Number(segment.start) || 0);
+        const end = clipStart + (Number(segment.end) || 0);
+        // Ignore anything that lands back on audio we already had a (correct) transcript for.
+        if (end <= gap.start + 0.3 || start >= gap.end - 0.3) continue;
+        recovered.push({ ...segment, start, end });
+      }
+    } catch (error) {
+      console.warn(`Не удалось восстановить пропуск ${gap.start.toFixed(1)}–${gap.end.toFixed(1)}с:`, error.message);
+    }
+  }
+
+  if (!recovered.length) return payload;
+  const merged = [...segments, ...recovered].sort((left, right) => Number(left.start) - Number(right.start));
+  payload.segments = merged;
+  payload.text = merged.map((segment) => segment.text).join(' ').trim();
+  payload.recovered_gap_segments = recovered.length;
+  return payload;
+}
+
 async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}) {
   let tempDir;
   try {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-audio-'));
     const audioPath = path.join(tempDir, 'speech.ogg');
     const extractionStartedAt = Date.now();
-    let videoDuration = 0;
+    let videoDuration = await probeDuration(sourcePath);
+    const audioBitrateKbps = pickAudioBitrateKbps(videoDuration);
     onUpdate({ progress: 22, stage: 'Извлекаем и сжимаем аудио', etaSeconds: null });
 
     const extraction = await runFfmpeg([
@@ -585,7 +679,7 @@ async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}
       '-ar', '16000',
       '-af', 'asetpts=PTS-STARTPTS',
       '-c:a', 'libopus',
-      '-b:a', '24k',
+      '-b:a', `${audioBitrateKbps}k`,
       '-progress', 'pipe:1',
       '-nostats',
       audioPath,
@@ -613,40 +707,19 @@ async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}
       { from: 60, to: 92, expectedSeconds: groqEstimate, onUpdate, stage: 'Groq распознаёт сербскую речь' },
     );
 
-    const firstStart = Number(payload.segments?.[0]?.start);
-    if (Number.isFinite(firstStart) && firstStart > 2.5) {
-      try {
-        onUpdate({ progress: 93, stage: 'Проверяем начало видео', etaSeconds: 25 });
-        const introPath = path.join(tempDir, 'intro.ogg');
-        const introDuration = Math.min(65, Math.ceil(firstStart + 6));
-        await runFfmpeg([
-          '-y',
-          '-i', audioPath,
-          '-t', String(introDuration),
-          '-af', 'asetpts=PTS-STARTPTS',
-          '-c:a', 'libopus',
-          '-b:a', '24k',
-          introPath,
-        ]);
-        const introPayload = await runEstimatedStage(
-          transcribeWithFallback(await readFile(introPath), apiKey, 'intro.ogg'),
-          { from: 95, to: 98, expectedSeconds: 25, onUpdate, stage: 'Восстанавливаем первые фразы' },
-        );
-        const recovered = (introPayload.segments || []).filter((segment) => (
-          Number(segment.start) < firstStart - 0.2 && Number(segment.end) <= firstStart + 0.5
-        ));
-        if (recovered.length) {
-          payload.segments = [...recovered, ...payload.segments];
-          payload.text = payload.segments.map((segment) => segment.text).join(' ').trim();
-          payload.recovered_intro_segments = recovered.length;
-        }
-      } catch (introError) {
-        console.warn('Не удалось отдельно проверить начало аудио:', introError.message);
-      }
-    }
+    onUpdate({ progress: 93, stage: 'Проверяем видео на пропуски в субтитрах', etaSeconds: 20 });
+    let gapProgress = 93;
+    const completePayload = await fillTranscriptionGaps(
+      payload,
+      audioPath,
+      tempDir,
+      apiKey,
+      videoDuration,
+      (patch) => onUpdate({ ...patch, progress: (gapProgress = Math.min(98, gapProgress + 1)) }),
+    );
 
     onUpdate({ progress: 99, stage: 'Сохраняем фрагменты и таймкоды', etaSeconds: 1 });
-    return payload;
+    return completePayload;
   } finally {
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -675,6 +748,132 @@ async function runTranscriptionJob(id, sourcePath, apiKey) {
     await rm(sourcePath, { force: true }).catch(() => {});
   }
 }
+
+const youtubeHosts = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'music.youtube.com']);
+
+function parseYoutubeUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    if (!youtubeHosts.has(parsed.hostname.toLowerCase())) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function youtubeDownloadRateLimited(ip) {
+  const now = Date.now();
+  const recent = (youtubeDownloadAttempts.get(ip) || []).filter((timestamp) => now - timestamp < 60 * 60 * 1000);
+  if (recent.length >= 8) return true;
+  recent.push(now);
+  youtubeDownloadAttempts.set(ip, recent);
+  return false;
+}
+
+function friendlyYoutubeError(error) {
+  const details = String(error?.stderr || error?.message || '');
+  if (/private video/i.test(details)) return 'Это приватное видео — его нельзя скачать.';
+  if (/video unavailable|has been removed|no longer available/i.test(details)) return 'Видео недоступно или было удалено.';
+  if (/sign in to confirm your age|age[- ]restricted/i.test(details)) return 'Видео имеет возрастное ограничение и недоступно без входа в аккаунт.';
+  if (/this live event|premieres in|is a live stream/i.test(details)) return 'Скачивание прямых трансляций пока не поддерживается.';
+  if (/timed out|timeout/i.test(details)) return 'YouTube отвечал слишком долго. Попробуйте ещё раз.';
+  return 'Не удалось скачать видео с YouTube. Проверьте ссылку или попробуйте позже.';
+}
+
+function asciiFallbackFilename(title, extension) {
+  const cleaned = String(title || 'video').replace(/[^\x20-\x7e]/g, '').replace(/[/\\?%*:|"<>]/g, '').trim();
+  return `${(cleaned || 'video').slice(0, 60)}${extension}`;
+}
+
+app.post('/api/youtube/download', async (req, res) => {
+  const url = parseYoutubeUrl(req.body?.url);
+  if (!url) return res.status(400).json({ error: 'Вставьте полную ссылку на видео youtube.com или youtu.be.' });
+  if (youtubeDownloadRateLimited(req.ip || req.socket.remoteAddress || 'unknown')) {
+    return res.status(429).json({ error: 'Слишком много загрузок с YouTube за последний час. Попробуйте позже.' });
+  }
+
+  let tempDir;
+  try {
+    let info;
+    try {
+      info = await ytdlp(url, {
+        dumpSingleJson: true,
+        noWarnings: true,
+        noPlaylist: true,
+        skipDownload: true,
+      }, { timeout: 30_000 });
+    } catch (error) {
+      const notFoundError = new Error(friendlyYoutubeError(error));
+      notFoundError.status = 404;
+      throw notFoundError;
+    }
+    if (info?.is_live) {
+      const liveError = new Error('Скачивание прямых трансляций пока не поддерживается.');
+      liveError.status = 400;
+      throw liveError;
+    }
+    if (Number(info?.duration) > 3 * 60 * 60) {
+      const tooLongError = new Error('Видео длиннее трёх часов. Выберите ролик покороче.');
+      tooLongError.status = 413;
+      throw tooLongError;
+    }
+
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-yt-'));
+    const outputTemplate = path.join(tempDir, 'video.%(ext)s');
+    try {
+      await ytdlp(url, {
+        output: outputTemplate,
+        // Prefer H.264/AAC explicitly: YouTube's mp4 streams are sometimes AV1, which not every
+        // browser can play natively in a <video> element. H.264 is universally supported.
+        format: 'bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/best[vcodec^=avc1][height<=720]/best[ext=mp4][height<=720]/best[height<=720]/best',
+        mergeOutputFormat: 'mp4',
+        ffmpegLocation: ffmpegPath,
+        noPlaylist: true,
+        noWarnings: true,
+        noCheckCertificates: true,
+      }, { timeout: 8 * 60 * 1000 });
+    } catch (error) {
+      const downloadError = new Error(friendlyYoutubeError(error));
+      downloadError.status = 502;
+      throw downloadError;
+    }
+
+    const files = await readdir(tempDir);
+    const resultFile = files.find((name) => name.startsWith('video.') && /\.(mp4|webm|mkv)$/i.test(name));
+    if (!resultFile) throw new Error('Не удалось найти скачанный файл видео.');
+    const resultPath = path.join(tempDir, resultFile);
+    const stats = await stat(resultPath);
+    if (stats.size > 500 * 1024 * 1024) {
+      const tooBigError = new Error('Видео с YouTube больше 500 МБ.');
+      tooBigError.status = 413;
+      throw tooBigError;
+    }
+
+    const extension = path.extname(resultFile) || '.mp4';
+    const title = String(info?.title || 'video').trim();
+    const videoType = publishedVideoType(resultFile) || 'video/mp4';
+    res.setHeader('Content-Type', videoType);
+    res.setHeader('Content-Length', String(stats.size));
+    res.setHeader('X-Video-Title', encodeURIComponent(title.slice(0, 200)));
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiFallbackFilename(title, extension)}"; filename*=UTF-8''${encodeURIComponent(`${title}${extension}`)}`,
+    );
+    const stream = createReadStream(resultPath);
+    stream.on('close', () => { rm(tempDir, { recursive: true, force: true }).catch(() => {}); });
+    stream.on('error', (error) => {
+      console.error('Ошибка передачи скачанного видео:', error);
+      rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    });
+    stream.pipe(res);
+  } catch (error) {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    console.error('Не удалось скачать видео с YouTube:', error);
+    if (res.headersSent) return res.end();
+    return res.status(error.status || 502).json({ error: error.message || friendlyYoutubeError(error) });
+  }
+});
 
 app.post(
   '/api/transcribe/jobs',
