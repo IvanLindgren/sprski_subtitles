@@ -843,6 +843,7 @@ function diagnoseYoutubeError(error) {
 
 function safeYoutubeDiagnostic(error) {
   const cleaned = youtubeErrorDetails(error)
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/https?:\/\/[^\s"'<>]+/gi, (value) => {
       try {
         const parsed = new URL(value);
