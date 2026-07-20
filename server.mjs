@@ -2,12 +2,12 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import ffmpegPath from 'ffmpeg-static';
-import ytdlp from 'yt-dlp-exec';
+import ytdlpExec from 'yt-dlp-exec';
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Upload as S3Upload } from '@aws-sdk/lib-storage';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +17,10 @@ app.set('trust proxy', 1);
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const clientPath = path.join(process.cwd(), 'dist');
+const managedYtDlpPath = process.env.YOUTUBE_DL_PATH
+  || path.join(process.cwd(), '.tools', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const managedYtDlpAvailable = existsSync(managedYtDlpPath);
+const ytdlp = managedYtDlpAvailable ? ytdlpExec.create(managedYtDlpPath) : ytdlpExec;
 const publicCategories = new Set(['фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое']);
 const objectStorage = {
   endpoint: process.env.S3_ENDPOINT,
@@ -78,7 +82,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), provider: 'groq', publicLibrary: publicLibraryConfigured, yandexTranslate: yandexTranslateConfigured });
+  res.json({ ok: true, ffmpeg: Boolean(ffmpegPath), ytDlpBinary: managedYtDlpAvailable, provider: 'groq', publicLibrary: publicLibraryConfigured, yandexTranslate: yandexTranslateConfigured });
 });
 
 function translationRateLimited(ip) {
