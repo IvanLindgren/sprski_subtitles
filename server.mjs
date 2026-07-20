@@ -793,6 +793,20 @@ function youtubeErrorDetails(error) {
 
 function diagnoseYoutubeError(error) {
   const details = youtubeErrorDetails(error);
+  if (/spawn[\s\S]*enoent|yt-dlp[\s\S]*(?:not found|no such file or directory)/i.test(details)) {
+    return {
+      code: 'YOUTUBE_BINARY_MISSING',
+      status: 500,
+      message: 'На Render не установлен исполняемый файл yt-dlp. Его загрузка во время сборки не завершилась, поэтому сервер не может запустить скачивание.',
+    };
+  }
+  if (/spawn[\s\S]*eacces|permission denied/i.test(details)) {
+    return {
+      code: 'YOUTUBE_BINARY_NOT_EXECUTABLE',
+      status: 500,
+      message: 'Render нашёл yt-dlp, но не может запустить файл из-за отсутствия права на выполнение.',
+    };
+  }
   if (/sign in to confirm(?:.*)(?:not a bot|you.?re not a bot)|confirm your age.*bot|not a bot/i.test(details)) {
     return {
       code: 'YOUTUBE_BOT_CHECK',
