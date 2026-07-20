@@ -771,14 +771,30 @@ function youtubeDownloadRateLimited(ip) {
   return false;
 }
 
+// YouTube blocks datacenter IPs (like Render's) and asks the "default" clients to prove they are
+// not a bot. The TV client historically does not require that proof-of-origin token, so we let
+// yt-dlp fall back to it — this is what makes downloads work from a cloud host without cookies.
+// If YOUTUBE_COOKIES_FILE is provided it is used as well, which is the fully reliable path.
+const youtubeExtractorArgs = 'youtube:player_client=default,tv_embedded';
+const youtubeCookiesFile = process.env.YOUTUBE_COOKIES_FILE || '';
+
+function withYoutubeAuth(flags) {
+  const merged = { extractorArgs: youtubeExtractorArgs, ...flags };
+  if (youtubeCookiesFile) merged.cookies = youtubeCookiesFile;
+  return merged;
+}
+
 function friendlyYoutubeError(error) {
   const details = String(error?.stderr || error?.message || '');
+  if (/sign in to confirm(?:.*)(?:not a bot|you.?re not a bot)|confirm your age.*bot|not a bot/i.test(details)) {
+    return 'YouTube заблокировал скачивание с сервера (защита от ботов). Скачайте ролик вручную через SaveFrom и загрузите MP4 сами.';
+  }
   if (/private video/i.test(details)) return 'Это приватное видео — его нельзя скачать.';
-  if (/video unavailable|has been removed|no longer available/i.test(details)) return 'Видео недоступно или было удалено.';
+  if (/video unavailable|has been removed|no longer available|not available/i.test(details)) return 'Видео недоступно, удалено или заблокировано в этом регионе.';
   if (/sign in to confirm your age|age[- ]restricted/i.test(details)) return 'Видео имеет возрастное ограничение и недоступно без входа в аккаунт.';
   if (/this live event|premieres in|is a live stream/i.test(details)) return 'Скачивание прямых трансляций пока не поддерживается.';
   if (/timed out|timeout/i.test(details)) return 'YouTube отвечал слишком долго. Попробуйте ещё раз.';
-  return 'Не удалось скачать видео с YouTube. Проверьте ссылку или попробуйте позже.';
+  return 'Не удалось скачать видео с YouTube. Попробуйте другую ссылку или скачайте ролик вручную через SaveFrom.';
 }
 
 function asciiFallbackFilename(title, extension) {
@@ -797,12 +813,12 @@ app.post('/api/youtube/download', async (req, res) => {
   try {
     let info;
     try {
-      info = await ytdlp(url, {
+      info = await ytdlp(url, withYoutubeAuth({
         dumpSingleJson: true,
         noWarnings: true,
         noPlaylist: true,
         skipDownload: true,
-      }, { timeout: 30_000 });
+      }), { timeout: 40_000 });
     } catch (error) {
       const notFoundError = new Error(friendlyYoutubeError(error));
       notFoundError.status = 404;
@@ -822,7 +838,7 @@ app.post('/api/youtube/download', async (req, res) => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-yt-'));
     const outputTemplate = path.join(tempDir, 'video.%(ext)s');
     try {
-      await ytdlp(url, {
+      await ytdlp(url, withYoutubeAuth({
         output: outputTemplate,
         // Prefer H.264/AAC explicitly: YouTube's mp4 streams are sometimes AV1, which not every
         // browser can play natively in a <video> element. H.264 is universally supported.
@@ -832,7 +848,7 @@ app.post('/api/youtube/download', async (req, res) => {
         noPlaylist: true,
         noWarnings: true,
         noCheckCertificates: true,
-      }, { timeout: 8 * 60 * 1000 });
+      }), { timeout: 8 * 60 * 1000 });
     } catch (error) {
       const downloadError = new Error(friendlyYoutubeError(error));
       downloadError.status = 502;
