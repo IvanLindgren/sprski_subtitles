@@ -152,7 +152,7 @@ async function waitForTranscriptionJob(id, onProgress) {
       failedPolls = 0;
       onProgress({
         percent: Number(payload.progress) || 0,
-        stage: payload.stage || 'Распознаём сербскую речь',
+        stage: payload.stage || 'Распознаём речь и готовим сербские субтитры',
         etaSeconds: Number.isFinite(payload.etaSeconds) ? payload.etaSeconds : null,
         elapsedSeconds: payload.elapsedSeconds,
       });
@@ -160,6 +160,7 @@ async function waitForTranscriptionJob(id, onProgress) {
       if (payload.status === 'error') {
         const error = new Error(payload.error || 'Распознавание остановлено.');
         error.code = payload.code;
+        error.status = Number(payload.statusCode) || undefined;
         throw error;
       }
     } catch (error) {
@@ -266,7 +267,7 @@ function Header({ inProject, inLibrary, onHome, onLibrary, onSettings }) {
     <header className="site-header">
       <button className="brand" onClick={onHome} aria-label="На главную">
         <BrandMark />
-        <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>српски видео-речник</small></span>
+        <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>сербские субтитры и видеословарь</small></span>
       </button>
       <div className="header-actions">
         {(inProject || inLibrary) && (
@@ -414,10 +415,10 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 
       <section className="hero">
         <div className="hero-copy">
-          <h1>Сервис для создания субтитров к сербскому видео.</h1>
-          <p>Загрузите ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.</p>
+          <h1>Сервис для создания сербских субтитров к видео на любом языке.</h1>
+          <p>Загрузите сербский, английский, русский или другой ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.</p>
           <div className="hero-limits">
-            <p>Бесплатный тариф Groq позволяет выполнить 2 000 запросов в сутки и распознать до двух часов аудио в час или до восьми часов в сутки. После сжатия аудиофайл должен занимать не более 25 МБ.</p>
+            <p>Сайт по умолчанию использует общий ключ Groq с сервера. Свой ключ можно добавить в настройках только при желании.</p>
           </div>
           <img className="hero-wolf" src="/assets/citavuk-guide.webp" alt="Читавук помогает разобраться с субтитрами" />
         </div>
@@ -438,7 +439,7 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 
       <section className="process-story">
         <BookOpen size={25} />
-        <p>Читавук распознаёт сербскую речь, синхронизирует текст с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.</p>
+        <p>Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.</p>
       </section>
 
       {projects.length > 0 && (
@@ -530,7 +531,7 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
       {!project.transcript?.length && (
         <div className="transcribe-callout">
           <div className="callout-icon"><WandSparkles size={22} /></div>
-          <div><strong>Видео готово к распознаванию</strong><span>Читавук распознает сербскую кириллицу или latinica и добавит точные таймкоды.</span></div>
+          <div><strong>Видео готово к распознаванию</strong><span>Читавук определит исходный язык, создаст сербские субтитры и сохранит точные таймкоды.</span></div>
           <button className="primary-button" onClick={() => onTranscribe()} disabled={Boolean(processing)}>
             {processing === 'transcribe' ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={17} />}
             {processing === 'transcribe' ? 'Слушаем речь…' : 'Создать субтитры'}
@@ -1007,25 +1008,24 @@ function SettingsModal({ value, onSave, onClose }) {
       <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
         <button className="modal-close" onClick={onClose} aria-label="Закрыть настройки"><X size={20} /></button>
         <div className="modal-icon"><KeyRound size={24} /></div>
-        <span className="modal-kicker">ПОДКЛЮЧЕНИЕ</span>
-        <h2>Ключ Groq API</h2>
-        <p>Groq распознаёт сербскую речь. Перевод выбранных слов через Yandex Translate выполняется на сервере и не требует ключа от пользователя.</p>
-        <p className="key-guide-copy">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, после чего скопируйте созданный ключ, который начинается с gsk_, и вставьте его в поле.</p>
-        <label>GROQ API KEY
-          <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="gsk_••••••••••••••••" autoFocus />
+        <span className="modal-kicker">НЕОБЯЗАТЕЛЬНО</span>
+        <h2>Свой ключ Groq API</h2>
+        <p>По умолчанию сайт уже использует общий ключ Groq с сервера. Личный ключ нужен только если вы хотите пользоваться собственными лимитами.</p>
+        <p className="key-guide-copy">Чтобы подключить свой ключ, откройте Groq Console, нажмите Create API Key и вставьте сюда значение, которое начинается с gsk_. Ключ останется только в локальном хранилище этого браузера.</p>
+        <label>ЛИЧНЫЙ GROQ API KEY
+          <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Оставьте пустым для общего ключа" autoFocus />
         </label>
-        <div className="free-info"><Sparkles size={18} /><p>Бесплатный тариф Groq позволяет выполнить 2 000 запросов в сутки и распознать до двух часов аудио в час или восьми часов в сутки. После сжатия файл должен занимать не более 25 МБ.</p></div>
+        <div className="free-info"><Sparkles size={18} /><p>Если удалить значение из поля и сохранить настройки, сайт снова автоматически переключится на общий ключ.</p></div>
         <div className="modal-actions">
-          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Получить ключ <ChevronRight size={15} /></a>
-          <button className="primary-button" onClick={() => onSave(key.trim())}>Сохранить ключ</button>
+          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Получить личный ключ <ChevronRight size={15} /></a>
+          <button className="primary-button" onClick={() => onSave(key.trim())}>{key.trim() ? 'Использовать свой ключ' : 'Использовать общий ключ'}</button>
         </div>
       </section>
     </div>
   );
 }
 
-function WelcomeModal({ value, onSave, onClose }) {
-  const [key, setKey] = useState(value);
+function WelcomeModal({ onClose }) {
   return (
     <div className="modal-backdrop welcome-backdrop" onMouseDown={onClose}>
       <section className="welcome-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -1036,17 +1036,13 @@ function WelcomeModal({ value, onSave, onClose }) {
         <div className="welcome-content">
           <span className="modal-kicker">ПЕРЕД НАЧАЛОМ</span>
           <h2>Познакомьтесь: Читавук</h2>
-          <p>Он поможет превратить сербскую речь в субтитры. Для распознавания нужен бесплатный ключ Groq.</p>
-          <p className="welcome-guide">Откройте Groq Console по ссылке ниже и войдите в аккаунт. Нажмите Create API Key, скопируйте созданный ключ с началом gsk_ и вставьте его в поле. Ключ сохранится локально в этом браузере и не исчезнет после закрытия вкладки.</p>
+          <p>Он распознает речь на исходном языке и превратит её в синхронные сербские субтитры.</p>
+          <p className="welcome-guide">Сервис уже подключён к общему ключу Groq, поэтому перед началом ничего вводить не нужно. При желании собственный ключ можно добавить позже в настройках.</p>
           <div className="welcome-limits">
-            <p>Бесплатный тариф включает 2 000 запросов в сутки и позволяет распознать до двух часов аудио в час или до восьми часов в сутки. После сжатия аудиофайл должен занимать не более 25 МБ.</p>
+            <p>Загрузите видео на любом языке. Читавук определит речь, сохранит таймкоды и переведёт готовые фрагменты на естественный сербский.</p>
           </div>
-          <label className="welcome-key-label">GROQ API KEY
-            <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="gsk_••••••••••••••••" />
-          </label>
           <div className="welcome-actions">
-            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Получить бесплатный ключ <ChevronRight size={15} /></a>
-            <button className="primary-button" onClick={() => onSave(key.trim())}>{key.trim() ? 'Сохранить и начать' : 'Перейти к сайту'}</button>
+            <button className="primary-button" onClick={onClose}>Начать</button>
           </div>
         </div>
       </section>
@@ -1064,7 +1060,7 @@ function remainingLabel(seconds) {
 
 function ProcessingBanner({ kind, progress }) {
   if (!kind) return null;
-  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Распознаём сербскую речь';
+  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Готовим сербские субтитры';
   const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : kind === 'youtube' ? 'Загружаем ролик на сервер и передаём его в браузер…' : 'Извлекаем звук и расставляем таймкоды…';
   if ((kind === 'transcribe' || kind === 'youtube') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
@@ -1249,7 +1245,7 @@ export default function App() {
       const job = await startTranscriptionJob(form, apiKey, setTranscriptionProgress);
       const payload = await waitForTranscriptionJob(job.id, setTranscriptionProgress);
       const transcript = normalizeTranscription(payload);
-      if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость и язык видео.');
+      if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость аудиодорожки.');
       setTranscriptionProgress({ percent: 100, stage: 'Субтитры готовы', etaSeconds: 0 });
       updateProject({ transcript }, projectId);
       notify(`Готово: ${transcript.length} фрагментов`);
@@ -1374,7 +1370,7 @@ export default function App() {
     setSettingsOpen(false);
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
-    notify(key ? 'Ключ сохранён в этом браузере' : 'Ключ удалён');
+    notify(key ? 'Используется ваш ключ Groq' : 'Используется общий ключ Groq');
   };
 
   const closeWelcome = () => {
@@ -1430,10 +1426,10 @@ export default function App() {
         <span>ЧИТАВУК-РЕЧНИК, 2026</span>
         <span>Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)</span>
         <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">По вопросам: @ivanlindgren</a>
-        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> Инструкция по ключу</button>
+        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> Как это работает</button>
       </footer>
       {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
-      {welcomeOpen && <WelcomeModal value={apiKey} onSave={saveKey} onClose={closeWelcome} />}
+      {welcomeOpen && <WelcomeModal onClose={closeWelcome} />}
       {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
       <ProcessingBanner kind={processing} progress={transcriptionProgress} />
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}

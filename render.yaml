@@ -10,8 +10,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22.16.0
-      - key: FRONTEND_ORIGIN
-        value: https://serbiansubtitles.netlify.app
+      - key: GROQ_API_KEY
+        sync: false
       - key: S3_REGION
         value: auto
       - key: S3_ENDPOINT
