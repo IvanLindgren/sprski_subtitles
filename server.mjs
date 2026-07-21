@@ -17,6 +17,12 @@ app.set('trust proxy', 1);
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || '0.0.0.0';
 const clientPath = path.join(process.cwd(), 'dist');
+const canonicalHost = 'serbiansubtitles.online';
+const canonicalAliases = new Set([
+  'www.serbiansubtitles.online',
+  'serbiansubtitles.ru',
+  'www.serbiansubtitles.ru',
+]);
 const managedYtDlpPath = process.env.YOUTUBE_DL_PATH
   || path.join(process.cwd(), '.tools', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const managedYtDlpAvailable = existsSync(managedYtDlpPath);
@@ -114,6 +120,15 @@ function resolveGroqApiKey(req) {
 const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 500 * 1024 * 1024, fieldSize: 5 * 1024 * 1024, fields: 10 },
+});
+
+app.use((req, res, next) => {
+  const requestHost = String(req.hostname || '').toLowerCase();
+  const isPageRequest = (req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api/');
+  if (isPageRequest && canonicalAliases.has(requestHost)) {
+    return res.redirect(301, `https://${canonicalHost}${req.originalUrl}`);
+  }
+  return next();
 });
 
 app.use((req, res, next) => {
@@ -1677,7 +1692,7 @@ app.post(
 
 app.use(express.static(clientPath, { index: false }));
 app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api/')) {
     return res.sendFile(path.join(clientPath, 'index.html'));
   }
   return next();
