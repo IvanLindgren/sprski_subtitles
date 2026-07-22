@@ -214,7 +214,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:fo
 .process-story p { max-width: 850px; margin: 0; color: rgba(255,255,255,.74); font-size: 11px; line-height: 1.75; }
 
 .recent-section { max-width: 1120px; margin: 0 auto; width: 100%; padding: 65px 40px 82px; }
-.seo-explainer { max-width: 1120px; margin: 0 auto; width: 100%; padding: 0 40px 78px; }
+.seo-explainer { max-width: 1120px; margin: 0 auto; width: 100%; padding: 52px 40px 78px; }
 .seo-explainer-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
 .seo-explainer article { min-height: 172px; padding: 24px; border: 1px solid var(--line); background: rgba(251,248,241,.67); }
 .seo-explainer h3 { margin: 0 0 11px; font: 400 18px 'Prata', Georgia, serif; }
@@ -379,6 +379,8 @@ video::cue { color: #fff; background-color: rgba(0, 0, 0, .82); font-family: Ari
 .publication-card > svg { color: var(--red); }
 .publication-cover { height: 79px; background: var(--navy); color: white; display: grid; place-items: center; position: relative; overflow: hidden; }
 .publication-cover::before { content: ''; position: absolute; inset: -45px 63px -45px -28px; background: var(--red); transform: rotate(23deg); }
+.publication-cover--image::before { display: none; }
+.publication-cover img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
 .publication-cover svg { position: relative; z-index: 1; }
 .publication-cover span { position: absolute; left: 6px; bottom: 5px; z-index: 2; background: var(--gold); color: var(--ink); padding: 3px 5px; font-size: 7px; font-weight: 800; text-transform: uppercase; }
 .publication-copy { min-width: 0; }
@@ -559,7 +561,7 @@ footer a:hover { text-decoration: underline; }
   .youtube-download form { grid-template-columns: 1fr; }
   .youtube-download button { width: 100%; }
   .recent-section { padding: 48px 18px 60px; }
-  .seo-explainer { padding: 0 18px 58px; }
+  .seo-explainer { padding: 42px 18px 58px; }
   .section-heading small { display: none; }
   .recent-thumb { width: 56px; }
   .subtle-icon { opacity: 1; }

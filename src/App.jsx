@@ -1038,7 +1038,10 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
         <section className="publication-grid">
           {visibleItems.map((item) => (
             <a className="publication-card" href={`/subtitles/${item.slug}`} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
-              <div className="publication-cover"><Film size={32} /><span>{item.category}</span></div>
+              <div className={`publication-cover ${item.thumbnailUrl ? 'publication-cover--image' : ''}`}>
+                {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={`Кадр из видео «${item.title}»`} loading="lazy" /> : <Film size={32} />}
+                <span>{item.category}</span>
+              </div>
               <div className="publication-copy">
                 <h2>{item.title}</h2>
                 <p>{item.description || 'Сербское видео с распознанными субтитрами.'}</p>

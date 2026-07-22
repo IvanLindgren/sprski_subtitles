@@ -75,6 +75,7 @@ const publicLibraryConfigured = Boolean(
   && objectStorage.secretAccessKey
   && objectStorage.publicBaseUrl,
 );
+const genericPublicThumbnailUrl = `https://${canonicalHost}/assets/citavuk-guide.webp`;
 const objectStorageClient = publicLibraryConfigured ? new S3Client({
   endpoint: objectStorage.endpoint,
   region: objectStorage.region,
@@ -569,8 +570,57 @@ function withPublicPageFields(item) {
     ...item,
     slug,
     pageUrl: `https://${canonicalHost}/subtitles/${encodeURIComponent(slug)}`,
-    thumbnailUrl: item?.thumbnailUrl || `https://${canonicalHost}/assets/citavuk-guide.webp`,
+    thumbnailUrl: item?.thumbnailUrl || genericPublicThumbnailUrl,
   };
+}
+
+async function createPublicThumbnail(item) {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-public-cover-'));
+  const thumbnailPath = path.join(tempDir, `${item.id}.jpg`);
+  try {
+    await runFfmpeg([
+      '-y',
+      '-ss', '1',
+      '-i', item.videoUrl,
+      '-frames:v', '1',
+      '-vf', 'scale=640:-2',
+      '-q:v', '3',
+      thumbnailPath,
+    ]);
+    const thumbnailKey = `thumbnails/${item.id}.jpg`;
+    const thumbnailUrl = publicObjectUrl(thumbnailKey);
+    await objectStorageClient.send(new PutObjectCommand({
+      Bucket: objectStorage.bucket,
+      Key: thumbnailKey,
+      Body: createReadStream(thumbnailPath),
+      ContentType: 'image/jpeg',
+      CacheControl: 'public, max-age=31536000, immutable',
+    }));
+    const updatedMetadata = { ...item, thumbnailUrl };
+    await objectStorageClient.send(new PutObjectCommand({
+      Bucket: objectStorage.bucket,
+      Key: `library/${item.id}.json`,
+      Body: JSON.stringify(updatedMetadata),
+      ContentType: 'application/json; charset=utf-8',
+      CacheControl: 'no-cache',
+    }));
+    console.log(`[public-library] Создана обложка для «${item.title}»`);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function backfillPublicThumbnails() {
+  if (!publicLibraryConfigured) return;
+  const items = await listPublicMetadata();
+  const missingThumbnails = items.filter((item) => item.thumbnailUrl === genericPublicThumbnailUrl && item.videoUrl);
+  for (const item of missingThumbnails) {
+    try {
+      await createPublicThumbnail(item);
+    } catch (error) {
+      console.warn(`[public-library] Не удалось создать обложку для «${item.title}»: ${error.message}`);
+    }
+  }
 }
 
 async function listPublicMetadata() {
@@ -2263,6 +2313,10 @@ app.use((error, _req, res, _next) => {
 
 const httpServer = app.listen(port, host, () => {
   console.log(`Сайт запущен: http://${host}:${port}`);
+});
+
+backfillPublicThumbnails().catch((error) => {
+  console.warn(`[public-library] Не удалось проверить обложки: ${error.message}`);
 });
 
 startYoutubePotProvider().catch((error) => {
