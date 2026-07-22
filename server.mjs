@@ -480,6 +480,27 @@ function publicObjectUrl(key) {
   return `${objectStorage.publicBaseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function slugifyPublicTitle(value, fallback = 'video') {
+  const cyrillicMap = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+    х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ы: 'y', э: 'e', ю: 'yu', я: 'ya', ђ: 'dj',
+    ј: 'j', љ: 'lj', њ: 'nj', ћ: 'c', џ: 'dz', ъ: '', ь: '',
+  };
+  const transliterated = String(value || '')
+    .toLocaleLowerCase('ru')
+    .split('')
+    .map((character) => cyrillicMap[character] ?? character)
+    .join('')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 76)
+    .replace(/-+$/g, '');
+  return transliterated || fallback;
+}
+
 function safeFilename(filename = 'video.mp4') {
   const extension = path.extname(filename).slice(0, 12).replace(/[^a-z0-9.]/gi, '') || '.mp4';
   return `video${extension.toLowerCase()}`;
@@ -542,6 +563,56 @@ async function getPublicMetadata(id) {
   return JSON.parse(await bodyToText(response.Body));
 }
 
+function withPublicPageFields(item) {
+  const slug = String(item?.slug || '').trim() || slugifyPublicTitle(item?.title, `video-${String(item?.id || '').slice(0, 8)}`);
+  return {
+    ...item,
+    slug,
+    pageUrl: `https://${canonicalHost}/subtitles/${encodeURIComponent(slug)}`,
+    thumbnailUrl: item?.thumbnailUrl || `https://${canonicalHost}/assets/citavuk-guide.webp`,
+  };
+}
+
+async function listPublicMetadata() {
+  if (!publicLibraryConfigured) return [];
+  const objects = [];
+  let continuationToken;
+  do {
+    const listing = await objectStorageClient.send(new ListObjectsV2Command({
+      Bucket: objectStorage.bucket,
+      Prefix: 'library/',
+      MaxKeys: 1000,
+      ContinuationToken: continuationToken,
+    }));
+    objects.push(...(listing.Contents || []));
+    continuationToken = listing.IsTruncated ? listing.NextContinuationToken : undefined;
+  } while (continuationToken);
+  const keys = objects
+    .filter((item) => item.Key?.endsWith('.json'))
+    .sort((left, right) => new Date(right.LastModified || 0) - new Date(left.LastModified || 0))
+    .map((item) => item.Key.slice('library/'.length, -'.json'.length));
+  return (await Promise.all(keys.map((id) => getPublicMetadata(id).catch(() => null))))
+    .filter(Boolean)
+    .map(withPublicPageFields)
+    .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+}
+
+async function resolvePublicMetadata(identifier) {
+  if (/^[a-f0-9-]{36}$/i.test(identifier)) return withPublicPageFields(await getPublicMetadata(identifier));
+  const normalizedSlug = slugifyPublicTitle(identifier, '');
+  const items = await listPublicMetadata();
+  return items.find((item) => item.slug === normalizedSlug) || null;
+}
+
+async function createUniquePublicSlug(title) {
+  const base = slugifyPublicTitle(title);
+  const existing = new Set((await listPublicMetadata()).map((item) => item.slug));
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
 function publicListItem(item) {
   const { segments: _segments, ...summary } = item;
   return summary;
@@ -556,23 +627,21 @@ function publicationRateLimited(ip) {
   return false;
 }
 
-app.get('/api/public/videos', async (_req, res) => {
+app.get('/api/public/videos', async (req, res) => {
   if (!publicLibraryConfigured) return res.json({ configured: false, items: [] });
   try {
-    const listing = await objectStorageClient.send(new ListObjectsV2Command({
-      Bucket: objectStorage.bucket,
-      Prefix: 'library/',
-      MaxKeys: 60,
-    }));
-    const keys = (listing.Contents || [])
-      .filter((item) => item.Key?.endsWith('.json'))
-      .sort((left, right) => new Date(right.LastModified || 0) - new Date(left.LastModified || 0))
-      .map((item) => item.Key.slice('library/'.length, -'.json'.length));
-    const items = (await Promise.all(keys.map((id) => getPublicMetadata(id).catch(() => null))))
-      .filter(Boolean)
-      .map(publicListItem)
-      .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
-    return res.json({ configured: true, items });
+    const category = String(req.query.category || '').trim().toLocaleLowerCase('ru');
+    const limit = Math.max(1, Math.min(24, Number.parseInt(req.query.limit || '8', 10) || 8));
+    const requestedPage = Math.max(1, Number.parseInt(req.query.page || '1', 10) || 1);
+    const allItems = await listPublicMetadata();
+    const filteredItems = category && category !== 'все'
+      ? allItems.filter((item) => item.category === category)
+      : allItems;
+    const totalItems = filteredItems.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+    const page = Math.min(requestedPage, totalPages);
+    const items = filteredItems.slice((page - 1) * limit, page * limit).map(publicListItem);
+    return res.json({ configured: true, items, page, totalPages, totalItems, limit, category: category || 'все' });
   } catch (error) {
     console.error('Не удалось загрузить публичную библиотеку:', error);
     return res.status(502).json({ error: 'Хранилище публичных видео временно недоступно.' });
@@ -581,9 +650,11 @@ app.get('/api/public/videos', async (_req, res) => {
 
 app.get('/api/public/videos/:id', async (req, res) => {
   if (!publicLibraryConfigured) return res.status(503).json({ error: 'Публичная библиотека ещё не подключена.' });
-  if (!/^[a-f0-9-]{36}$/i.test(req.params.id)) return res.status(400).json({ error: 'Некорректный адрес публикации.' });
+  if (!/^[a-z0-9-]{1,100}$/i.test(req.params.id)) return res.status(400).json({ error: 'Некорректный адрес публикации.' });
   try {
-    return res.json(await getPublicMetadata(req.params.id));
+    const item = await resolvePublicMetadata(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Публикация не найдена.' });
+    return res.json(item);
   } catch (error) {
     if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404) return res.status(404).json({ error: 'Публикация не найдена.' });
     console.error('Не удалось открыть публикацию:', error);
@@ -599,6 +670,7 @@ app.post(
   upload.single('video'),
   async (req, res) => {
     const sourcePath = req.file?.path;
+    const thumbnailPath = sourcePath ? `${sourcePath}-thumbnail.jpg` : null;
     try {
       if (!req.file) return res.status(400).json({ error: 'Для публикации нужен исходный видеофайл.' });
       if (req.body.rightsConfirmed !== 'true') return res.status(400).json({ error: 'Подтвердите право на публичное размещение видео.' });
@@ -617,11 +689,36 @@ app.post(
       }
 
       const id = randomUUID();
+      const slug = await createUniquePublicSlug(title);
       const filename = safeFilename(req.file.originalname);
       const videoKey = `videos/${id}/${filename}`;
       const subtitleKey = `subtitles/${id}.vtt`;
+      const thumbnailKey = `thumbnails/${id}.jpg`;
       const videoUrl = publicObjectUrl(videoKey);
       const subtitleUrl = publicObjectUrl(subtitleKey);
+      let thumbnailUrl = `https://${canonicalHost}/assets/citavuk-guide.webp`;
+
+      try {
+        await runFfmpeg([
+          '-y',
+          '-ss', '1',
+          '-i', sourcePath,
+          '-frames:v', '1',
+          '-vf', 'scale=640:-2',
+          '-q:v', '3',
+          thumbnailPath,
+        ]);
+        await objectStorageClient.send(new PutObjectCommand({
+          Bucket: objectStorage.bucket,
+          Key: thumbnailKey,
+          Body: createReadStream(thumbnailPath),
+          ContentType: 'image/jpeg',
+          CacheControl: 'public, max-age=31536000, immutable',
+        }));
+        thumbnailUrl = publicObjectUrl(thumbnailKey);
+      } catch (thumbnailError) {
+        console.warn('Не удалось создать превью публикации:', thumbnailError.message);
+      }
 
       await new S3Upload({
         client: objectStorageClient,
@@ -645,6 +742,8 @@ app.post(
 
       const metadata = {
         id,
+        slug,
+        pageUrl: `https://${canonicalHost}/subtitles/${encodeURIComponent(slug)}`,
         title,
         category,
         description,
@@ -656,6 +755,7 @@ app.post(
         segmentsCount: segments.length,
         videoUrl,
         subtitleUrl,
+        thumbnailUrl,
         segments,
       };
       await objectStorageClient.send(new PutObjectCommand({
@@ -672,6 +772,7 @@ app.post(
       return res.status(502).json({ error: error.message || 'Не удалось сохранить видео в публичной библиотеке.' });
     } finally {
       if (sourcePath) await rm(sourcePath, { force: true }).catch(() => {});
+      if (thumbnailPath) await rm(thumbnailPath, { force: true }).catch(() => {});
     }
   },
 );
@@ -1942,6 +2043,201 @@ app.post(
     }
   },
 );
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeXml(value) {
+  return escapeHtml(value);
+}
+
+function isoDuration(seconds) {
+  const safe = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const remainder = safe % 60;
+  return `PT${hours ? `${hours}H` : ''}${minutes ? `${minutes}M` : ''}${remainder || (!hours && !minutes) ? `${remainder}S` : ''}`;
+}
+
+function jsonLdScript(value) {
+  return `<script type="application/ld+json">${JSON.stringify(value).replace(/</g, '\\u003c')}</script>`;
+}
+
+async function renderSeoHtml({ title, description, canonicalPath, type = 'website', image, video, structuredData, content, robots = 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1' }) {
+  const canonicalUrl = `https://${canonicalHost}${canonicalPath}`;
+  let html = await readFile(path.join(clientPath, 'index.html'), 'utf8');
+  const safeTitle = escapeHtml(title);
+  const safeDescription = escapeHtml(description);
+  html = html
+    .replace(/<title>[\s\S]*?<\/title>/i, `<title>${safeTitle}</title>`)
+    .replace(/<meta name="description"[^>]*>/i, `<meta name="description" content="${safeDescription}" />`)
+    .replace(/<meta name="robots"[^>]*>/i, `<meta name="robots" content="${escapeHtml(robots)}" />`)
+    .replace(/<link rel="canonical"[^>]*>/i, `<link rel="canonical" href="${escapeHtml(canonicalUrl)}" />`)
+    .replace(/<link rel="alternate" hreflang="ru"[^>]*>/i, `<link rel="alternate" hreflang="ru" href="${escapeHtml(canonicalUrl)}" />`)
+    .replace(/<link rel="alternate" hreflang="x-default"[^>]*>/i, `<link rel="alternate" hreflang="x-default" href="${escapeHtml(canonicalUrl)}" />`)
+    .replace(/<meta property="og:type"[^>]*>/i, `<meta property="og:type" content="${escapeHtml(type)}" />`)
+    .replace(/<meta property="og:title"[^>]*>/i, `<meta property="og:title" content="${safeTitle}" />`)
+    .replace(/<meta property="og:description"[^>]*>/i, `<meta property="og:description" content="${safeDescription}" />`)
+    .replace(/<meta property="og:url"[^>]*>/i, `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`)
+    .replace(/<meta name="twitter:title"[^>]*>/i, `<meta name="twitter:title" content="${safeTitle}" />`)
+    .replace(/<meta name="twitter:description"[^>]*>/i, `<meta name="twitter:description" content="${safeDescription}" />`);
+
+  if (image) {
+    html = html
+      .replace(/<meta property="og:image"[^>]*>/i, `<meta property="og:image" content="${escapeHtml(image)}" />`)
+      .replace(/<meta name="twitter:image"[^>]*>/i, `<meta name="twitter:image" content="${escapeHtml(image)}" />`);
+  }
+
+  const extraMeta = [
+    video ? `<meta property="og:video" content="${escapeHtml(video)}" /><meta property="og:video:type" content="video/mp4" />` : '',
+    structuredData ? jsonLdScript(structuredData) : '',
+  ].filter(Boolean).join('\n    ');
+  html = html.replace('</head>', `    ${extraMeta}\n  </head>`);
+  html = html.replace(/<div id="root">[\s\S]*?<\/div>\s*<script type="module"/i, `<div id="root">${content}</div>\n    <script type="module"`);
+  return html;
+}
+
+function publicVideoDescription(item) {
+  return String(item.description || `${item.title} — видео с синхронными сербскими субтитрами и полным текстом реплик.`).trim().slice(0, 260);
+}
+
+app.get('/library', (_req, res) => res.redirect(301, '/subtitles'));
+
+app.get('/subtitles', async (req, res) => {
+  try {
+    const requestedPage = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
+    const requestedCategory = String(req.query.category || '').trim().toLocaleLowerCase('ru');
+    const category = publicCategories.has(requestedCategory) ? requestedCategory : '';
+    const allItems = await listPublicMetadata();
+    const filteredItems = category ? allItems.filter((item) => item.category === category) : allItems;
+    const totalPages = Math.max(1, Math.ceil(filteredItems.length / 8));
+    const page = Math.min(requestedPage, totalPages);
+    const items = filteredItems.slice((page - 1) * 8, page * 8);
+    const pageHref = (targetPage) => {
+      const params = new URLSearchParams();
+      if (category) params.set('category', category);
+      if (targetPage > 1) params.set('page', String(targetPage));
+      return `/subtitles${params.size ? `?${params}` : ''}`;
+    };
+    const links = items.map((item) => `
+      <article>
+        <h2><a href="/subtitles/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></h2>
+        <p>${escapeHtml(publicVideoDescription(item))}</p>
+      </article>`).join('');
+    const pageLinks = Array.from({ length: totalPages }, (_, index) => index + 1)
+      .map((number) => number === page ? `<strong>${number}</strong>` : `<a href="${escapeHtml(pageHref(number))}">${number}</a>`)
+      .join(' · ');
+    const pagination = totalPages > 1 ? `<nav aria-label="Страницы библиотеки">${page > 1 ? `<a href="${escapeHtml(pageHref(page - 1))}">Назад</a> · ` : ''}${pageLinks}${page < totalPages ? ` · <a href="${escapeHtml(pageHref(page + 1))}">Дальше</a>` : ''}</nav>` : '';
+    const heading = category ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Публичная библиотека видео с сербскими субтитрами';
+    const title = `${heading}${page > 1 ? ` — страница ${page}` : ''}`;
+    const canonicalPath = pageHref(page);
+    const content = `<main class="seo-fallback"><nav aria-label="Хлебные крошки"><a href="/">Главная</a> → <a href="/subtitles">Библиотека субтитров</a>${category ? ` → ${escapeHtml(category)}` : ''}</nav><h1>${escapeHtml(heading)}</h1><p>Смотрите фильмы, мультфильмы, блоги и учебные видео с синхронными сербскими субтитрами. Каждая публикация открывается на отдельной странице вместе с полным текстом реплик.</p>${links || '<p>Новые публикации скоро появятся.</p>'}${pagination}</main>`;
+    const structuredData = {
+      '@context': 'https://schema.org',
+      '@type': 'CollectionPage',
+      name: heading,
+      url: `https://${canonicalHost}${canonicalPath}`,
+      description: 'Открытая библиотека видео с синхронными сербскими субтитрами и текстом реплик.',
+      hasPart: items.map((item) => ({ '@type': 'VideoObject', name: item.title, url: item.pageUrl })),
+    };
+    const linkHeaders = [];
+    if (page > 1) linkHeaders.push(`<https://${canonicalHost}${pageHref(page - 1)}>; rel="prev"`);
+    if (page < totalPages) linkHeaders.push(`<https://${canonicalHost}${pageHref(page + 1)}>; rel="next"`);
+    if (linkHeaders.length) res.set('Link', linkHeaders.join(', '));
+    return res.type('html').send(await renderSeoHtml({
+      title,
+      description: 'Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.',
+      canonicalPath,
+      image: `https://${canonicalHost}/assets/citavuk-guide.webp`,
+      structuredData,
+      content,
+    }));
+  } catch (error) {
+    console.error('Не удалось подготовить SEO-страницу библиотеки:', error);
+    return res.sendFile(path.join(clientPath, 'index.html'));
+  }
+});
+
+app.get('/subtitles/:slug', async (req, res) => {
+  try {
+    const item = await resolvePublicMetadata(req.params.slug);
+    if (!item) {
+      const content = '<main class="seo-fallback"><h1>Видео не найдено</h1><p>Возможно, публикация была удалена. Вернитесь в <a href="/subtitles">библиотеку сербских субтитров</a>.</p></main>';
+      return res.status(404).type('html').send(await renderSeoHtml({
+        title: 'Видео не найдено — Читавук-речник',
+        description: 'Публикация не найдена.',
+        canonicalPath: req.path,
+        robots: 'noindex, follow',
+        content,
+      }));
+    }
+    if (/^[a-f0-9-]{36}$/i.test(req.params.slug)) return res.redirect(301, `/subtitles/${encodeURIComponent(item.slug)}`);
+
+    const description = publicVideoDescription(item);
+    const shortTitle = item.title.length > 58 ? `${item.title.slice(0, 57).trim()}…` : item.title;
+    const transcript = (item.segments || []).map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim();
+    const canonicalPath = `/subtitles/${encodeURIComponent(item.slug)}`;
+    const content = `<main class="seo-fallback seo-video-page"><nav aria-label="Хлебные крошки"><a href="/">Главная</a> → <a href="/subtitles">Библиотека</a> → ${escapeHtml(item.title)}</nav><h1>${escapeHtml(item.title)} — сербские субтитры</h1><p>${escapeHtml(description)}</p><p><strong>Категория:</strong> ${escapeHtml(item.category)}. <strong>Продолжительность:</strong> ${escapeHtml(Math.ceil((Number(item.duration) || 0) / 60))} мин.</p><h2>Текст видео на сербском языке</h2><p>${escapeHtml(transcript.slice(0, 5000))}</p></main>`;
+    const structuredData = [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'VideoObject',
+        name: item.title,
+        description,
+        thumbnailUrl: [item.thumbnailUrl],
+        uploadDate: item.createdAt,
+        duration: isoDuration(item.duration),
+        contentUrl: item.videoUrl,
+        url: item.pageUrl,
+        inLanguage: 'sr',
+        transcript: transcript.slice(0, 5000),
+      },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Главная', item: `https://${canonicalHost}/` },
+          { '@type': 'ListItem', position: 2, name: 'Библиотека', item: `https://${canonicalHost}/subtitles` },
+          { '@type': 'ListItem', position: 3, name: item.title, item: item.pageUrl },
+        ],
+      },
+    ];
+    return res.type('html').send(await renderSeoHtml({
+      title: `${shortTitle} — сербские субтитры`,
+      description,
+      canonicalPath,
+      type: 'video.other',
+      image: item.thumbnailUrl,
+      video: item.videoUrl,
+      structuredData,
+      content,
+    }));
+  } catch (error) {
+    console.error('Не удалось подготовить SEO-страницу видео:', error);
+    return res.status(502).sendFile(path.join(clientPath, 'index.html'));
+  }
+});
+
+app.get('/sitemap.xml', async (_req, res) => {
+  try {
+    const items = await listPublicMetadata();
+    const urls = [
+      `<url><loc>https://${canonicalHost}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>`,
+      `<url><loc>https://${canonicalHost}/subtitles</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`,
+      ...items.map((item) => `<url><loc>${escapeXml(item.pageUrl)}</loc><lastmod>${escapeXml(String(item.createdAt || '').slice(0, 10))}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority><video:video><video:thumbnail_loc>${escapeXml(item.thumbnailUrl)}</video:thumbnail_loc><video:title>${escapeXml(item.title)}</video:title><video:description>${escapeXml(publicVideoDescription(item))}</video:description><video:content_loc>${escapeXml(item.videoUrl)}</video:content_loc></video:video></url>`),
+    ].join('');
+    return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">${urls}</urlset>\n`);
+  } catch (error) {
+    console.error('Не удалось построить Sitemap:', error);
+    return res.status(503).type('text/plain').send('Sitemap temporarily unavailable');
+  }
+});
 
 app.use(express.static(clientPath, { index: false }));
 app.use((req, res, next) => {

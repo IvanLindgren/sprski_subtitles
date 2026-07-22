@@ -9,7 +9,6 @@ import {
   Download,
   FileText,
   Film,
-  FolderOpen,
   Gauge,
   Globe2,
   KeyRound,
@@ -43,6 +42,34 @@ const PROJECTS_KEY = 'recnik-projects-v1';
 const API_KEY_STORAGE_KEY = 'recnik-groq-key';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
+const DEFAULT_PAGE_TITLE = 'Сербские субтитры для видео онлайн — Читавук-речник';
+const DEFAULT_PAGE_DESCRIPTION = 'Онлайн-сервис создаёт сербские субтитры из видео на русском, английском и других языках, экспортирует SRT, VTT и MP4 и помогает собирать личный словарь.';
+
+function readBrowserRoute() {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  const videoMatch = pathname.match(/^\/subtitles\/([a-z0-9-]+)$/i);
+  if (videoMatch) return { page: 'library', videoSlug: videoMatch[1] };
+  if (pathname === '/subtitles' || pathname === '/library') return { page: 'library', videoSlug: null };
+  return { page: 'landing', videoSlug: null };
+}
+
+function PageMetadata({ title = DEFAULT_PAGE_TITLE, description = DEFAULT_PAGE_DESCRIPTION, path = '/' }) {
+  useEffect(() => {
+    document.title = title;
+    const descriptionTag = document.querySelector('meta[name="description"]');
+    if (descriptionTag) descriptionTag.setAttribute('content', description);
+    const canonical = document.querySelector('link[rel="canonical"]');
+    if (canonical) canonical.setAttribute('href', `https://serbiansubtitles.online${path}`);
+    document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => link.setAttribute('href', `https://serbiansubtitles.online${path}`));
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    const ogDescription = document.querySelector('meta[property="og:description"]');
+    const ogUrl = document.querySelector('meta[property="og:url"]');
+    if (ogTitle) ogTitle.setAttribute('content', title);
+    if (ogDescription) ogDescription.setAttribute('content', description);
+    if (ogUrl) ogUrl.setAttribute('content', `https://serbiansubtitles.online${path}`);
+  }, [description, path, title]);
+  return null;
+}
 
 function apiUrl(pathname) {
   return `${API_BASE_URL}${pathname}`;
@@ -271,23 +298,21 @@ function BrandMark() {
 }
 
 function Header({ inProject, inLibrary, onHome, onLibrary, onSettings }) {
+  const follow = (event, action) => {
+    event.preventDefault();
+    action();
+  };
   return (
     <header className="site-header">
-      <button className="brand" onClick={onHome} aria-label="На главную">
+      <a className="brand" href="/" onClick={(event) => follow(event, onHome)} aria-label="На главную">
         <BrandMark />
         <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>сербские субтитры и видеословарь</small></span>
-      </button>
+      </a>
       <div className="header-actions">
-        {(inProject || inLibrary) && (
-          <button className="text-button" onClick={onHome}>
-            <FolderOpen size={17} /> Мои видео
-          </button>
-        )}
-        {!inLibrary && (
-          <button className="text-button library-link" onClick={onLibrary}>
-            <Globe2 size={17} /> Публичная библиотека
-          </button>
-        )}
+        <nav className="site-nav" aria-label="Основная навигация">
+          <a className={!inLibrary ? 'is-active' : ''} href="/" onClick={(event) => follow(event, onHome)}><Upload size={17} /><span>{inProject ? 'Мои видео' : 'Создать субтитры'}</span></a>
+          <a className={inLibrary ? 'is-active' : ''} href="/subtitles" onClick={(event) => follow(event, onLibrary)}><Globe2 size={17} /><span>Библиотека</span></a>
+        </nav>
         <button className="icon-button" onClick={onSettings} aria-label="Настройки API">
           <Settings2 size={20} />
         </button>
@@ -418,6 +443,7 @@ function RecentProject({ project, onOpen, onDelete }) {
 function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, youtubeBusy }) {
   return (
     <main className="landing">
+      <PageMetadata />
       <div className="side-ornament side-ornament--left"><PatternBand vertical /></div>
       <div className="side-ornament side-ornament--right"><PatternBand vertical /></div>
 
@@ -450,8 +476,17 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
         <p>Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.</p>
       </section>
 
+      <section className="seo-explainer" aria-labelledby="seo-explainer-title">
+        <div className="section-heading"><div><span>КАК ЭТО РАБОТАЕТ</span><h2 id="seo-explainer-title">Сербские субтитры без ручной разметки</h2></div></div>
+        <div className="seo-explainer-grid">
+          <article><h3>Загрузите видео</h3><p>Подойдут MP4, MOV, WEBM, MKV и другие распространённые форматы с русской, английской, сербской или другой речью.</p></article>
+          <article><h3>Получите сербский текст</h3><p>Сервис распознаёт речь, переводит реплики на естественный сербский язык и синхронизирует каждую фразу с видео.</p></article>
+          <article><h3>Смотрите или скачивайте</h3><p>Используйте субтитры в плеере, сохраняйте SRT и VTT, создавайте MP4 или публикуйте разрешённое видео в открытой библиотеке.</p></article>
+        </div>
+      </section>
+
       {projects.length > 0 && (
-        <section className="recent-section">
+        <section className="recent-section" id="my-videos">
           <div className="section-heading"><div><span>ВАША ПОЛКА</span><h2>Недавние видео</h2></div><small>{projects.length} {pluralizeRu(projects.length, 'проект', 'проекта', 'проектов')}</small></div>
           <div className="recent-list">
             {projects.slice(0, 4).map((project) => <RecentProject key={project.id} project={project} onOpen={onOpen} onDelete={onDelete} />)}
@@ -835,9 +870,12 @@ function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onT
   );
 }
 
-function PublicLibrary({ refreshToken, notify }) {
+function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigate }) {
   const [items, setItems] = useState([]);
-  const [category, setCategory] = useState('все');
+  const [category, setCategory] = useState(() => new URLSearchParams(window.location.search).get('category') || 'все');
+  const [currentPage, setCurrentPage] = useState(() => Math.max(1, Number.parseInt(new URLSearchParams(window.location.search).get('page') || '1', 10) || 1));
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
   const [selected, setSelected] = useState(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -846,6 +884,14 @@ function PublicLibrary({ refreshToken, notify }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const nextCategory = params.get('category') || 'все';
+    setCategory(PUBLIC_CATEGORIES.includes(nextCategory) ? nextCategory : 'все');
+    setCurrentPage(Math.max(1, Number.parseInt(params.get('page') || '1', 10) || 1));
+  }, [locationKey]);
+
+  useEffect(() => {
+    if (videoSlug) return undefined;
     let cancelled = false;
     const load = async () => {
       if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) {
@@ -858,12 +904,17 @@ function PublicLibrary({ refreshToken, notify }) {
       setLoading(true);
       setError('');
       try {
-        const response = await fetch(apiUrl('/api/public/videos'));
+        const params = new URLSearchParams({ page: String(currentPage), limit: '8' });
+        if (category !== 'все') params.set('category', category);
+        const response = await fetch(apiUrl(`/api/public/videos?${params}`));
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || 'Не удалось открыть публичную библиотеку.');
         if (!cancelled) {
           setConfigured(payload.configured !== false);
           setItems(Array.isArray(payload.items) ? payload.items : []);
+          setCurrentPage(Number(payload.page) || 1);
+          setTotalPages(Number(payload.totalPages) || 1);
+          setTotalItems(Number(payload.totalItems) || 0);
         }
       } catch (loadError) {
         if (!cancelled) setError(loadError.message);
@@ -873,24 +924,51 @@ function PublicLibrary({ refreshToken, notify }) {
     };
     load();
     return () => { cancelled = true; };
-  }, [refreshToken]);
+  }, [category, currentPage, refreshToken, videoSlug]);
 
-  const openPublication = async (id) => {
-    setLoading(true);
-    setError('');
-    try {
-      const response = await fetch(apiUrl(`/api/public/videos/${id}`));
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Не удалось открыть видео.');
-      setSelected(payload);
+  useEffect(() => {
+    if (!videoSlug) {
+      setSelected(null);
       setCurrentTime(0);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (openError) {
-      setError(openError.message);
-      notify(openError.message);
-    } finally {
-      setLoading(false);
+      return undefined;
     }
+    let cancelled = false;
+    const openPublication = async () => {
+      setSelected(null);
+      setLoading(true);
+      setError('');
+      try {
+        const response = await fetch(apiUrl(`/api/public/videos/${encodeURIComponent(videoSlug)}`));
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Не удалось открыть видео.');
+        if (!cancelled) {
+          setSelected(payload);
+          setCurrentTime(0);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      } catch (openError) {
+        if (!cancelled) {
+          setError(openError.message);
+          notify(openError.message);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    openPublication();
+    return () => { cancelled = true; };
+  }, [videoSlug]);
+
+  const libraryHref = (page = 1, nextCategory = category) => {
+    const params = new URLSearchParams();
+    if (nextCategory !== 'все') params.set('category', nextCategory);
+    if (page > 1) params.set('page', String(page));
+    return `/subtitles${params.size ? `?${params}` : ''}`;
+  };
+
+  const follow = (event, href) => {
+    event.preventDefault();
+    onNavigate(href);
   };
 
   const seek = (time) => {
@@ -902,13 +980,18 @@ function PublicLibrary({ refreshToken, notify }) {
   };
 
   if (selected) {
+    const pagePath = `/subtitles/${selected.slug || videoSlug}`;
+    const pageDescription = selected.description || `${selected.title} — видео с синхронными сербскими субтитрами и текстом реплик.`;
+    const shortTitle = selected.title.length > 58 ? `${selected.title.slice(0, 57).trim()}…` : selected.title;
     return (
       <main className="public-library public-viewer">
+        <PageMetadata title={`${shortTitle} — сербские субтитры`} description={pageDescription} path={pagePath} />
         <div className="library-heading">
-          <button className="library-back" onClick={() => setSelected(null)}><ArrowLeft size={17} /> Ко всем публикациям</button>
+          <nav className="breadcrumbs" aria-label="Хлебные крошки"><a href="/" onClick={(event) => follow(event, '/')}>Главная</a><span>›</span><a href="/subtitles" onClick={(event) => follow(event, '/subtitles')}>Библиотека</a><span>›</span><strong>{selected.title}</strong></nav>
+          <a className="library-back" href="/subtitles" onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> Ко всем публикациям</a>
           <span className="category-badge"><Tag size={13} /> {selected.category}</span>
           <h1>{selected.title}</h1>
-          <p>{selected.description || 'Сербское видео опубликовано анонимно вместе с готовыми синхронными субтитрами.'}</p>
+          <p>{pageDescription}</p>
         </div>
         <section className="public-player-layout">
           <div className="public-video-shell">
@@ -931,9 +1014,10 @@ function PublicLibrary({ refreshToken, notify }) {
     );
   }
 
-  const visibleItems = category === 'все' ? items : items.filter((item) => item.category === category);
+  const visibleItems = items;
   return (
     <main className="public-library">
+      <PageMetadata title={`${category !== 'все' ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Видео с сербскими субтитрами — публичная библиотека'}${currentPage > 1 ? ` — страница ${currentPage}` : ''}`} description="Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик." path={libraryHref(currentPage, category)} />
       <PatternBand />
       <section className="library-intro">
         <div>
@@ -943,9 +1027,9 @@ function PublicLibrary({ refreshToken, notify }) {
         </div>
         <img src="/assets/citavuk-guide.webp" alt="Читавук показывает публичную библиотеку" />
       </section>
-      <div className="category-filter" aria-label="Фильтр по категории">
-        {PUBLIC_CATEGORIES.map((item) => <button key={item} className={category === item ? 'is-active' : ''} onClick={() => setCategory(item)}>{item}</button>)}
-      </div>
+      <nav className="category-filter" aria-label="Фильтр по категории">
+        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{item}</a>)}
+      </nav>
       {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>Читавук открывает библиотеку…</p></div>}
       {!loading && error && <div className="library-state library-state--error"><Globe2 size={28} /><p>{error}</p></div>}
       {!loading && !error && !configured && <div className="library-state"><Globe2 size={28} /><p>Публичное хранилище ещё не подключено. После добавления параметров Cloudflare R2 в Render здесь появятся анонимные публикации.</p></div>}
@@ -953,7 +1037,7 @@ function PublicLibrary({ refreshToken, notify }) {
       {!loading && !error && visibleItems.length > 0 && (
         <section className="publication-grid">
           {visibleItems.map((item) => (
-            <button className="publication-card" key={item.id} onClick={() => openPublication(item.id)}>
+            <a className="publication-card" href={`/subtitles/${item.slug}`} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
               <div className="publication-cover"><Film size={32} /><span>{item.category}</span></div>
               <div className="publication-copy">
                 <h2>{item.title}</h2>
@@ -961,9 +1045,21 @@ function PublicLibrary({ refreshToken, notify }) {
                 <small>{item.segmentsCount} {pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}, {formatClock(item.duration)}</small>
               </div>
               <ChevronRight size={19} />
-            </button>
+            </a>
           ))}
         </section>
+      )}
+      {!loading && !error && totalItems > 0 && (
+        <nav className="pagination" aria-label="Страницы библиотеки">
+          <a className={currentPage <= 1 ? 'is-disabled' : ''} href={libraryHref(Math.max(1, currentPage - 1))} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>Назад</a>
+          <span>Страница {currentPage} из {totalPages}</span>
+          <div>
+            {Array.from({ length: totalPages }, (_, index) => index + 1).slice(Math.max(0, currentPage - 3), Math.max(5, currentPage + 2)).map((page) => (
+              <a key={page} className={page === currentPage ? 'is-active' : ''} href={libraryHref(page)} onClick={(event) => follow(event, libraryHref(page))}>{page}</a>
+            ))}
+          </div>
+          <a className={currentPage >= totalPages ? 'is-disabled' : ''} href={libraryHref(Math.min(totalPages, currentPage + 1))} onClick={(event) => currentPage < totalPages && follow(event, libraryHref(currentPage + 1))}>Дальше</a>
+        </nav>
       )}
     </main>
   );
@@ -1099,7 +1195,9 @@ function ProcessingBanner({ kind, progress }) {
 export default function App() {
   const [projects, setProjects] = useState(loadProjects);
   const [activeId, setActiveId] = useState(null);
-  const [page, setPage] = useState('landing');
+  const [page, setPage] = useState(() => readBrowserRoute().page);
+  const [publicVideoSlug, setPublicVideoSlug] = useState(() => readBrowserRoute().videoSlug);
+  const [locationKey, setLocationKey] = useState(() => `${window.location.pathname}${window.location.search}`);
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [apiKey, setApiKey] = useState(loadApiKey);
@@ -1137,6 +1235,29 @@ export default function App() {
     });
   };
 
+  const applyBrowserLocation = () => {
+    const route = readBrowserRoute();
+    setPage(route.page);
+    setPublicVideoSlug(route.videoSlug);
+    setLocationKey(`${window.location.pathname}${window.location.search}`);
+  };
+
+  const navigate = (href, { replace = false } = {}) => {
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', href);
+    applyBrowserLocation();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveId(null);
+      setCurrentMedia(null);
+      applyBrowserLocation();
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const createProject = async (file, nameOverride) => {
     if (!file.type.startsWith('video/') && !/\.(mp4|mov|mkv|avi|webm|m4v)$/i.test(file.name)) {
       notify('Выберите видеофайл');
@@ -1158,7 +1279,7 @@ export default function App() {
     };
     setProjects((current) => [project, ...current]);
     setActiveId(id);
-    setPage('landing');
+    navigate('/');
     setCurrentMedia(file);
     try {
       await saveVideoBlob(id, file);
@@ -1172,7 +1293,7 @@ export default function App() {
     const existing = projects.find((project) => project.isDemo);
     if (existing) {
       setActiveId(existing.id);
-      setPage('landing');
+      navigate('/');
       setCurrentMedia(null);
       return;
     }
@@ -1191,7 +1312,7 @@ export default function App() {
     };
     setProjects((current) => [project, ...current]);
     setActiveId(project.id);
-    setPage('landing');
+    navigate('/');
     setCurrentMedia(null);
   };
 
@@ -1199,7 +1320,7 @@ export default function App() {
     const project = projects.find((item) => item.id === id);
     if (!project) return;
     setActiveId(id);
-    setPage('landing');
+    navigate('/');
     if (project.isDemo) return setCurrentMedia(null);
     try {
       const blob = await getVideoBlob(id);
@@ -1361,7 +1482,7 @@ export default function App() {
       setLibraryRefresh((value) => value + 1);
       setActiveId(null);
       setCurrentMedia(null);
-      setPage('library');
+      navigate(`/subtitles/${payload.slug}`);
       notify('Видео анонимно опубликовано в общей библиотеке');
     } catch (error) {
       notify(error.message);
@@ -1390,13 +1511,13 @@ export default function App() {
   const goHome = () => {
     setActiveId(null);
     setCurrentMedia(null);
-    setPage('landing');
+    navigate('/');
   };
 
   const openLibrary = () => {
     setActiveId(null);
     setCurrentMedia(null);
-    setPage('library');
+    navigate('/subtitles');
   };
 
   return (
@@ -1419,7 +1540,7 @@ export default function App() {
           onDismissError={() => setTranscriptionError('')}
         />
       ) : page === 'library' ? (
-        <PublicLibrary refreshToken={libraryRefresh} notify={notify} />
+        <PublicLibrary refreshToken={libraryRefresh} notify={notify} videoSlug={publicVideoSlug} locationKey={locationKey} onNavigate={navigate} />
       ) : (
         <Landing
           projects={projects}
@@ -1434,6 +1555,7 @@ export default function App() {
       <footer>
         <span>ЧИТАВУК-РЕЧНИК, 2026</span>
         <span>Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)</span>
+        <nav aria-label="Навигация в подвале"><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>Создать субтитры</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>Библиотека</a><a href="/sitemap.xml">Карта сайта</a></nav>
         <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">По вопросам: @ivanlindgren</a>
         <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> Как это работает</button>
       </footer>
