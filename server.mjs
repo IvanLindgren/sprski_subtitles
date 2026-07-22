@@ -98,6 +98,7 @@ const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptio
 const polzaAiKey = String(process.env.POLZA_AI_KEY || '').trim();
 const polzaTranscriptionModel = String(process.env.POLZA_TRANSCRIPTION_MODEL || 'aiesa/transcribe').trim();
 const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'auto').trim().toLowerCase();
+const subtitleDelaySeconds = Math.max(0, Math.min(3, Number(process.env.SUBTITLE_DELAY_SECONDS) || 0.4));
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
 );
@@ -514,15 +515,16 @@ function normalizePublishedSegments(value) {
 
 function vttTime(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const secs = Math.floor(safe % 60);
-  const millis = Math.floor((safe % 1) * 1000);
+  const totalMillis = Math.round(safe * 1000);
+  const hours = Math.floor(totalMillis / 3_600_000);
+  const minutes = Math.floor((totalMillis % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMillis % 60_000) / 1000);
+  const millis = totalMillis % 1000;
   return [hours, minutes, secs].map((part) => String(part).padStart(2, '0')).join(':') + `.${String(millis).padStart(3, '0')}`;
 }
 
 function makePublicVtt(segments) {
-  return `WEBVTT\n\n${segments.map((segment) => `${vttTime(segment.start)} --> ${vttTime(segment.end)}\n${segment.text}`).join('\n\n')}\n`;
+  return `WEBVTT\n\n${segments.map((segment) => `${vttTime(segment.start + subtitleDelaySeconds)} --> ${vttTime(segment.end + subtitleDelaySeconds)}\n${segment.text}`).join('\n\n')}\n`;
 }
 
 async function bodyToText(body) {

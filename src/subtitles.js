@@ -1,25 +1,37 @@
+export const SUBTITLE_DELAY_SECONDS = 0.4;
+
+export function subtitleTime(seconds, delaySeconds = SUBTITLE_DELAY_SECONDS) {
+  return Math.max(0, (Number(seconds) || 0) + delaySeconds);
+}
+
+export function isSubtitleActive(segment, currentTime, delaySeconds = SUBTITLE_DELAY_SECONDS) {
+  return currentTime >= subtitleTime(segment.start, delaySeconds)
+    && currentTime < subtitleTime(segment.end, delaySeconds);
+}
+
 export function formatClock(seconds, withMillis = false) {
   const safe = Math.max(0, Number(seconds) || 0);
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const secs = Math.floor(safe % 60);
-  const millis = Math.floor((safe % 1) * 1000);
+  const totalMillis = Math.round(safe * 1000);
+  const hours = Math.floor(totalMillis / 3_600_000);
+  const minutes = Math.floor((totalMillis % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMillis % 60_000) / 1000);
+  const millis = totalMillis % 1000;
   const base = [hours, minutes, secs].map((part) => String(part).padStart(2, '0')).join(':');
   return withMillis ? `${base}.${String(millis).padStart(3, '0')}` : `${minutes + hours * 60}:${String(secs).padStart(2, '0')}`;
 }
 
-export function makeVtt(segments) {
+export function makeVtt(segments, delaySeconds = SUBTITLE_DELAY_SECONDS) {
   const body = segments
-    .map((segment) => `${formatClock(segment.start, true)} --> ${formatClock(segment.end, true)}\n${segment.text.trim()}`)
+    .map((segment) => `${formatClock(subtitleTime(segment.start, delaySeconds), true)} --> ${formatClock(subtitleTime(segment.end, delaySeconds), true)}\n${segment.text.trim()}`)
     .join('\n\n');
   return `WEBVTT\n\n${body}\n`;
 }
 
-export function makeSrt(segments) {
+export function makeSrt(segments, delaySeconds = SUBTITLE_DELAY_SECONDS) {
   return segments
     .map((segment, index) => {
-      const start = formatClock(segment.start, true).replace('.', ',');
-      const end = formatClock(segment.end, true).replace('.', ',');
+      const start = formatClock(subtitleTime(segment.start, delaySeconds), true).replace('.', ',');
+      const end = formatClock(subtitleTime(segment.end, delaySeconds), true).replace('.', ',');
       return `${index + 1}\n${start} --> ${end}\n${segment.text.trim()}`;
     })
     .join('\n\n');

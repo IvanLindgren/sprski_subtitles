@@ -29,7 +29,15 @@ import {
   X,
 } from 'lucide-react';
 import { deleteVideoBlob, getVideoBlob, saveVideoBlob } from './storage';
-import { cleanWord, downloadText, formatClock, makeSrt, makeVtt } from './subtitles';
+import {
+  cleanWord,
+  downloadText,
+  formatClock,
+  isSubtitleActive,
+  makeSrt,
+  makeVtt,
+  subtitleTime,
+} from './subtitles';
 
 const PROJECTS_KEY = 'recnik-projects-v1';
 const API_KEY_STORAGE_KEY = 'recnik-groq-key';
@@ -591,12 +599,13 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
           </div>
           <div className="segments">
             {visible.map((segment) => {
-              const active = currentTime >= segment.start && currentTime < segment.end;
+              const delaySeconds = project.isDemo ? 0 : undefined;
+              const active = isSubtitleActive(segment, currentTime, delaySeconds);
               return (
                 <article key={segment.id} className={`segment ${active ? 'is-active' : ''}`}>
-                  <button className="segment-time" onClick={() => onSeek(segment.start)}>{formatClock(segment.start)}</button>
+                  <button className="segment-time" onClick={() => onSeek(subtitleTime(segment.start, delaySeconds))}>{formatClock(subtitleTime(segment.start, delaySeconds))}</button>
                   <p>{segment.text.split(/\s+/).map((word, index) => (
-                    <WordToken key={`${word}-${index}`} value={word} added={saved.has(cleanWord(word))} onAdd={(cleaned) => onAddWord(cleaned, segment.start, segment.text)} />
+                    <WordToken key={`${word}-${index}`} value={word} added={saved.has(cleanWord(word))} onAdd={(cleaned) => onAddWord(cleaned, subtitleTime(segment.start, delaySeconds), segment.text)} />
                   ))}</p>
                   {active && <span className="playing-bars"><i /><i /><i /></span>}
                 </article>
@@ -699,7 +708,7 @@ function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onT
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
-  const activeSegment = project.transcript?.find((segment) => currentTime >= segment.start && currentTime < segment.end);
+  const activeSegment = project.transcript?.find((segment) => isSubtitleActive(segment, currentTime, project.isDemo ? 0 : undefined));
 
   const seek = (time) => {
     setCurrentTime(time);
@@ -911,8 +920,8 @@ function PublicLibrary({ refreshToken, notify }) {
             <div className="public-transcript-heading"><span>СЕРБСКИЕ СУБТИТРЫ</span><h2>Текст видео</h2></div>
             <div className="public-segments">
               {(selected.segments || []).map((segment) => (
-                <button key={segment.id} className={currentTime >= segment.start && currentTime < segment.end ? 'is-active' : ''} onClick={() => seek(segment.start)}>
-                  <time>{formatClock(segment.start)}</time><span>{segment.text}</span>
+                <button key={segment.id} className={isSubtitleActive(segment, currentTime) ? 'is-active' : ''} onClick={() => seek(subtitleTime(segment.start))}>
+                  <time>{formatClock(subtitleTime(segment.start))}</time><span>{segment.text}</span>
                 </button>
               ))}
             </div>
