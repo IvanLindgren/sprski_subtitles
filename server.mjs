@@ -93,6 +93,8 @@ const translationCache = new Map();
 const youtubeDownloadAttempts = new Map();
 let activeTranscriptions = 0;
 let activeSharedTranscriptions = 0;
+const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.env.MAX_ACTIVE_TRANSCRIPTIONS || '2', 10) || 2));
+const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptions, Number.parseInt(process.env.MAX_ACTIVE_SHARED_TRANSCRIPTIONS || '2', 10) || 2));
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
 );
@@ -155,6 +157,7 @@ app.get('/api/health', (_req, res) => {
     poTokenProviderVersion: youtubePotProviderState.version,
     provider: 'groq',
     sharedGroqKey: Boolean(String(process.env.GROQ_API_KEY || '').trim()),
+    transcriptionConcurrency: maxActiveTranscriptions,
     publicLibrary: publicLibraryConfigured,
     yandexTranslate: yandexTranslateConfigured,
   });
@@ -175,11 +178,13 @@ function acquireTranscriptionProcessing(ipAddress) {
   const ip = String(ipAddress || 'unknown').slice(0, 120);
   const recent = (transcriptionAttempts.get(ip) || []).filter((timestamp) => timestamp > windowStart);
   transcriptionAttempts.set(ip, recent);
-  if (activeTranscriptions >= 2) {
+  if (activeTranscriptions >= maxActiveTranscriptions) {
     return {
       ok: false,
       code: 'TRANSCRIPTION_SERVER_BUSY',
-      error: 'Сервер уже обрабатывает два видео. Попробуйте немного позже.',
+      error: maxActiveTranscriptions === 1
+        ? 'Сервер уже обрабатывает видео. Попробуйте немного позже.'
+        : `Сервер уже обрабатывает ${maxActiveTranscriptions} видео. Попробуйте немного позже.`,
     };
   }
   if (recent.length >= 10) {
@@ -220,7 +225,7 @@ function acquireSharedTranscription(ipAddress) {
   sharedTranscriptionAttempts.set(ip, perIp);
   sharedTranscriptionAttempts.set(globalKey, global);
 
-  if (activeSharedTranscriptions >= 2) {
+  if (activeSharedTranscriptions >= maxActiveSharedTranscriptions) {
     return {
       ok: false,
       code: 'SHARED_GROQ_BUSY',
