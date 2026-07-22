@@ -1,4 +1,4 @@
-export const SUBTITLE_DELAY_SECONDS = 1;
+export const SUBTITLE_DELAY_SECONDS = 1.4;
 
 export function subtitleTime(seconds, delaySeconds = SUBTITLE_DELAY_SECONDS) {
   return Math.max(0, (Number(seconds) || 0) + delaySeconds);
