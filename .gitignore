@@ -2,5 +2,6 @@ node_modules/
 dist/
 .tools/
 .env
+testvideo/
 *.log
 .DS_Store

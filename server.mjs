@@ -95,6 +95,9 @@ let activeTranscriptions = 0;
 let activeSharedTranscriptions = 0;
 const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.env.MAX_ACTIVE_TRANSCRIPTIONS || '2', 10) || 2));
 const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptions, Number.parseInt(process.env.MAX_ACTIVE_SHARED_TRANSCRIPTIONS || '2', 10) || 2));
+const polzaAiKey = String(process.env.POLZA_AI_KEY || '').trim();
+const polzaTranscriptionModel = String(process.env.POLZA_TRANSCRIPTION_MODEL || 'aiesa/transcribe').trim();
+const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'auto').trim().toLowerCase();
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
 );
@@ -113,6 +116,45 @@ function resolveGroqCredentials(req) {
     apiKey: userKey || sharedKey,
     usesSharedKey: !userKey && Boolean(sharedKey),
   };
+}
+
+function resolveTranscriptionCredentials(req) {
+  const userGroqKey = String(req.get('x-groq-api-key') || '').trim();
+  const sharedGroqKey = String(process.env.GROQ_API_KEY || '').trim();
+  if (userGroqKey) {
+    return {
+      provider: 'groq',
+      apiKey: userGroqKey,
+      groqApiKey: userGroqKey,
+      usesSharedKey: false,
+    };
+  }
+  const preferGroq = transcriptionProviderPreference === 'groq';
+  if (polzaAiKey && !preferGroq) {
+    return {
+      provider: 'polza',
+      apiKey: polzaAiKey,
+      groqApiKey: sharedGroqKey,
+      usesSharedKey: true,
+    };
+  }
+  if (sharedGroqKey) {
+    return {
+      provider: 'groq',
+      apiKey: sharedGroqKey,
+      groqApiKey: sharedGroqKey,
+      usesSharedKey: true,
+    };
+  }
+  if (polzaAiKey) {
+    return {
+      provider: 'polza',
+      apiKey: polzaAiKey,
+      groqApiKey: '',
+      usesSharedKey: true,
+    };
+  }
+  return { provider: '', apiKey: '', groqApiKey: '', usesSharedKey: false };
 }
 
 function resolveGroqApiKey(req) {
@@ -155,8 +197,10 @@ app.get('/api/health', (_req, res) => {
     poTokenProvider: youtubePotProviderState.status === 'ready',
     poTokenProviderStatus: youtubePotProviderState.status,
     poTokenProviderVersion: youtubePotProviderState.version,
-    provider: 'groq',
+    provider: polzaAiKey && transcriptionProviderPreference !== 'groq' ? 'polza' : 'groq',
     sharedGroqKey: Boolean(String(process.env.GROQ_API_KEY || '').trim()),
+    sharedPolzaKey: Boolean(polzaAiKey),
+    polzaTranscriptionModel: polzaAiKey ? polzaTranscriptionModel : null,
     transcriptionConcurrency: maxActiveTranscriptions,
     publicLibrary: publicLibraryConfigured,
     yandexTranslate: yandexTranslateConfigured,
@@ -228,15 +272,15 @@ function acquireSharedTranscription(ipAddress) {
   if (activeSharedTranscriptions >= maxActiveSharedTranscriptions) {
     return {
       ok: false,
-      code: 'SHARED_GROQ_BUSY',
-      error: 'Общий ключ сейчас занят распознаванием других видео. Попробуйте немного позже или временно добавьте свой ключ Groq.',
+      code: 'SHARED_TRANSCRIPTION_BUSY',
+      error: 'Общий сервис сейчас занят распознаванием других видео. Попробуйте немного позже или временно добавьте свой ключ Groq.',
     };
   }
   if (perIp.length >= 6 || global.length >= 24) {
     return {
       ok: false,
-      code: 'SHARED_GROQ_RATE_LIMIT',
-      error: 'Лимит общего ключа Groq на этот час исчерпан. Попробуйте позже или временно добавьте свой ключ в настройках.',
+      code: 'SHARED_TRANSCRIPTION_RATE_LIMIT',
+      error: 'Часовой лимит общего сервиса распознавания исчерпан. Попробуйте позже или временно добавьте свой ключ Groq в настройках.',
     };
   }
 
@@ -265,10 +309,10 @@ function acquireSharedTranscription(ipAddress) {
 }
 
 function admitTranscription(req, res, next) {
-  const credentials = resolveGroqCredentials(req);
+  const credentials = resolveTranscriptionCredentials(req);
   if (!credentials.apiKey) {
     return res.status(401).json({
-      error: 'Общий ключ Groq не настроен. Добавьте GROQ_API_KEY на сервере или временно используйте свой ключ.',
+      error: 'На сервере не настроен ключ сервиса распознавания. Добавьте POLZA_AI_KEY или GROQ_API_KEY либо временно используйте личный ключ Groq.',
       code: 'MISSING_API_KEY',
     });
   }
@@ -286,7 +330,7 @@ function admitTranscription(req, res, next) {
 
   let released = false;
   const admission = {
-    apiKey: credentials.apiKey,
+    credentials,
     transferred: false,
     release() {
       if (released) return;
@@ -719,6 +763,144 @@ async function transcribeWithFallback(audio, apiKey, filename = 'speech.ogg', op
   }
 }
 
+function normalizePolzaTranscription(payload) {
+  const segments = (Array.isArray(payload?.segments) ? payload.segments : [])
+    .map((segment, id) => {
+      const start = Number(segment?.start);
+      const end = Number(segment?.end);
+      const text = cleanSubtitleText(segment?.text);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || !text) return null;
+      return {
+        id,
+        start,
+        end,
+        text,
+        ...(segment?.speaker ? { speaker: String(segment.speaker) } : {}),
+      };
+    })
+    .filter(Boolean);
+  return {
+    ...payload,
+    text: cleanSubtitleText(payload?.text) || segments.map((segment) => segment.text).join(' '),
+    duration: Number(payload?.duration) || 0,
+    segments,
+    language: String(payload?.language || '').trim(),
+    model: String(payload?.model || polzaTranscriptionModel),
+    provider: 'polza',
+  };
+}
+
+async function requestPolzaTranscription(audio, apiKey, filename = 'speech.ogg') {
+  const form = new FormData();
+  form.append('file', new Blob([audio], { type: 'audio/ogg' }), filename);
+  form.append('model', polzaTranscriptionModel);
+  const createdResponse = await fetch('https://polza.ai/api/v1/audio/transcriptions', {
+    method: 'POST',
+    signal: AbortSignal.timeout(180_000),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+  const created = await createdResponse.json().catch(() => ({}));
+  if (!createdResponse.ok) {
+    const error = new Error(created?.error?.message || 'Polza.ai не смогла принять аудиодорожку.');
+    error.status = createdResponse.status;
+    error.provider = 'polza';
+    error.model = polzaTranscriptionModel;
+    throw error;
+  }
+  if (Array.isArray(created?.segments)) return normalizePolzaTranscription(created);
+  const jobId = String(created?.id || '').trim();
+  if (!jobId) {
+    const error = new Error('Polza.ai не вернула идентификатор задачи распознавания.');
+    error.status = 502;
+    error.provider = 'polza';
+    throw error;
+  }
+
+  const timeoutMs = Math.max(60_000, Number(process.env.POLZA_TRANSCRIPTION_TIMEOUT_MS) || 30 * 60 * 1000);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    const statusResponse = await fetch(`https://polza.ai/api/v1/audio/transcriptions/${encodeURIComponent(jobId)}`, {
+      signal: AbortSignal.timeout(30_000),
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const payload = await statusResponse.json().catch(() => ({}));
+    if (!statusResponse.ok) {
+      const error = new Error(payload?.error?.message || 'Polza.ai не смогла вернуть состояние распознавания.');
+      error.status = statusResponse.status;
+      error.provider = 'polza';
+      error.model = polzaTranscriptionModel;
+      throw error;
+    }
+    const status = String(payload?.status || '').toLowerCase();
+    if (status === 'completed') return normalizePolzaTranscription(payload);
+    if (status === 'failed' || status === 'cancelled') {
+      const error = new Error(payload?.error?.message || 'Aiesa не смогла распознать аудиодорожку.');
+      error.status = 502;
+      error.provider = 'polza';
+      error.model = polzaTranscriptionModel;
+      throw error;
+    }
+  }
+  const error = new Error('Aiesa слишком долго обрабатывает аудио. Попробуйте ещё раз позднее.');
+  error.status = 504;
+  error.provider = 'polza';
+  error.model = polzaTranscriptionModel;
+  throw error;
+}
+
+async function transcribePolzaAudio(audioPath, tempDir, apiKey, totalDuration, originalAudio) {
+  const maxChunkSeconds = 4 * 60;
+  if (!Number.isFinite(totalDuration) || totalDuration <= maxChunkSeconds) {
+    return requestPolzaTranscription(originalAudio || await readFile(audioPath), apiKey);
+  }
+
+  const chunkCount = Math.ceil(totalDuration / maxChunkSeconds);
+  const combinedSegments = [];
+  let firstPayload = null;
+  for (let index = 0; index < chunkCount; index += 1) {
+    const offset = index * maxChunkSeconds;
+    const chunkDuration = Math.min(maxChunkSeconds, totalDuration - offset);
+    const chunkPath = path.join(tempDir, `polza-${index}.ogg`);
+    await runFfmpeg([
+      '-y',
+      '-ss', String(offset),
+      '-t', String(chunkDuration),
+      '-i', audioPath,
+      '-vn',
+      '-ac', '1',
+      '-ar', '16000',
+      '-af', 'asetpts=PTS-STARTPTS',
+      '-c:a', 'libopus',
+      '-b:a', '32k',
+      chunkPath,
+    ]);
+    const payload = await requestPolzaTranscription(
+      await readFile(chunkPath),
+      apiKey,
+      `speech-${index + 1}-of-${chunkCount}.ogg`,
+    );
+    firstPayload ||= payload;
+    for (const segment of payload.segments || []) {
+      combinedSegments.push({
+        ...segment,
+        start: offset + Number(segment.start || 0),
+        end: offset + Number(segment.end || 0),
+      });
+    }
+  }
+  return {
+    ...(firstPayload || {}),
+    text: combinedSegments.map((segment) => segment.text).join(' ').trim(),
+    duration: totalDuration,
+    segments: combinedSegments,
+    chunks: chunkCount,
+    provider: 'polza',
+    model: polzaTranscriptionModel,
+  };
+}
+
 const whisperLanguageCodes = new Map([
   ['afrikaans', 'af'], ['albanian', 'sq'], ['amharic', 'am'], ['arabic', 'ar'],
   ['armenian', 'hy'], ['assamese', 'as'], ['azerbaijani', 'az'], ['bashkir', 'ba'],
@@ -765,7 +947,7 @@ function cleanSubtitleText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 1600);
 }
 
-function makeTranslationBatches(items, maxItems = 60, maxCharacters = 7000) {
+function makeTranslationBatches(items, maxItems = 40, maxCharacters = 5000) {
   const batches = [];
   let batch = [];
   let characters = 0;
@@ -811,7 +993,7 @@ async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => 
             model,
             temperature: 0,
             reasoning_effort: 'low',
-            max_completion_tokens: 8192,
+            max_completion_tokens: 4096,
             response_format: {
               type: 'json_schema',
               json_schema: {
@@ -1093,14 +1275,15 @@ async function fillTranscriptionGaps(payload, audioPath, tempDir, apiKey, totalD
   return payload;
 }
 
-async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}) {
+async function processVideoTranscription(sourcePath, credentials, onUpdate = () => {}) {
   let tempDir;
   try {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-audio-'));
     const audioPath = path.join(tempDir, 'speech.ogg');
+    const usesPolza = credentials.provider === 'polza';
     const extractionStartedAt = Date.now();
     let videoDuration = await probeDuration(sourcePath);
-    const audioBitrateKbps = pickAudioBitrateKbps(videoDuration);
+    const audioBitrateKbps = usesPolza ? 32 : pickAudioBitrateKbps(videoDuration);
     onUpdate({ progress: 22, stage: 'Извлекаем и сжимаем аудио', etaSeconds: null });
 
     const extraction = await runFfmpeg([
@@ -1128,32 +1311,49 @@ async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}
 
     onUpdate({ progress: 58, stage: 'Проверяем аудиодорожку', etaSeconds: 3 });
     const audio = await readFile(audioPath);
-    if (audio.byteLength > 24.5 * 1024 * 1024) {
+    if (!usesPolza && audio.byteLength > 24.5 * 1024 * 1024) {
       const limitError = new Error('Аудиодорожка длиннее лимита бесплатного тарифа Groq. Разделите видео на части короче двух часов.');
       limitError.status = 413;
       throw limitError;
     }
 
-    const groqEstimate = Math.max(25, Math.min(180, (videoDuration || 600) * 0.08));
+    const transcriptionEstimate = usesPolza
+      ? Math.max(35, Math.min(15 * 60, (videoDuration || 600) * 0.8))
+      : Math.max(25, Math.min(180, (videoDuration || 600) * 0.08));
+    const transcriptionStage = usesPolza
+      ? 'Aiesa распознаёт речь и расставляет таймкоды'
+      : 'Groq определяет язык и распознаёт речь';
     const payload = await runEstimatedStage(
-      transcribeWithFallback(audio, apiKey),
-      { from: 60, to: 82, expectedSeconds: groqEstimate, onUpdate, stage: 'Groq определяет язык и распознаёт речь' },
+      usesPolza
+        ? transcribePolzaAudio(audioPath, tempDir, credentials.apiKey, videoDuration, audio)
+        : transcribeWithFallback(audio, credentials.apiKey),
+      { from: 60, to: 82, expectedSeconds: transcriptionEstimate, onUpdate, stage: transcriptionStage },
     );
 
     const sourceLanguage = normalizeWhisperLanguage(payload.language);
     onUpdate({ progress: 83, stage: 'Проверяем видео на пропуски в субтитрах', etaSeconds: 20 });
     let gapProgress = 83;
-    const completePayload = await fillTranscriptionGaps(
-      payload,
-      audioPath,
-      tempDir,
-      apiKey,
-      videoDuration,
-      sourceLanguage,
-      (patch) => onUpdate({ ...patch, progress: (gapProgress = Math.min(90, gapProgress + 1)) }),
-    );
+    const completePayload = credentials.groqApiKey
+      ? await fillTranscriptionGaps(
+        payload,
+        audioPath,
+        tempDir,
+        credentials.groqApiKey,
+        videoDuration,
+        sourceLanguage,
+        (patch) => onUpdate({ ...patch, progress: (gapProgress = Math.min(90, gapProgress + 1)) }),
+      )
+      : payload;
 
-    const serbianPayload = await translatePayloadToSerbian(completePayload, apiKey, onUpdate);
+    if (!credentials.groqApiKey && !isSerbianLanguage(completePayload.language)) {
+      const error = new Error('Для перевода распознанной речи на сербский нужен GROQ_API_KEY на сервере или личный ключ Groq.');
+      error.status = 503;
+      error.code = 'MISSING_TRANSLATION_API_KEY';
+      throw error;
+    }
+    const serbianPayload = credentials.groqApiKey
+      ? await translatePayloadToSerbian(completePayload, credentials.groqApiKey, onUpdate)
+      : completePayload;
     onUpdate({ progress: 99, stage: 'Сохраняем фрагменты и таймкоды', etaSeconds: 1 });
     return serbianPayload;
   } finally {
@@ -1164,11 +1364,11 @@ async function processVideoTranscription(sourcePath, apiKey, onUpdate = () => {}
 async function runTranscriptionJob(
   id,
   sourcePath,
-  apiKey,
+  credentials,
   releaseAdmission = () => {},
 ) {
   try {
-    const result = await processVideoTranscription(sourcePath, apiKey, (patch) => updateTranscriptionJob(id, patch));
+    const result = await processVideoTranscription(sourcePath, credentials, (patch) => updateTranscriptionJob(id, patch));
     updateTranscriptionJob(id, {
       status: 'done',
       progress: 100,
@@ -1182,7 +1382,7 @@ async function runTranscriptionJob(
       stage: 'Распознавание остановлено',
       etaSeconds: null,
       error: error.message || 'Ошибка обработки видео.',
-      code: error.code || (error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR'),
+      code: error.code || (error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : error.provider === 'polza' ? 'POLZA_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR'),
       statusCode: Number.isInteger(error.status) ? error.status : 500,
     });
     console.error(`[transcribe:${id}]`, error);
@@ -1603,7 +1803,7 @@ app.post(
     setImmediate(() => runTranscriptionJob(
       id,
       sourcePath,
-      req.transcriptionAdmission.apiKey,
+      req.transcriptionAdmission.credentials,
       req.transcriptionAdmission.release,
     ));
   },
@@ -1631,12 +1831,12 @@ app.post('/api/transcribe', admitTranscription, upload.single('video'), async (r
   try {
     if (!req.file) return res.status(400).json({ error: 'Сервер не получил видеофайл. Проверьте, что сайт развёрнут как Web Service, а не как Static Site.', code: 'MISSING_VIDEO_FILE' });
     req.transcriptionAdmission.transferred = true;
-    return res.json(await processVideoTranscription(sourcePath, req.transcriptionAdmission.apiKey));
+    return res.json(await processVideoTranscription(sourcePath, req.transcriptionAdmission.credentials));
   } catch (error) {
     console.error(error);
     return res.status(error.status || 500).json({
       error: error.message || 'Ошибка обработки видео.',
-      code: error.code || (error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR'),
+      code: error.code || (error.provider === 'groq' ? 'GROQ_TRANSCRIPTION_ERROR' : error.provider === 'polza' ? 'POLZA_TRANSCRIPTION_ERROR' : 'VIDEO_PROCESSING_ERROR'),
       provider: error.provider,
       model: error.model,
     });
