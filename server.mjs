@@ -97,7 +97,7 @@ const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.
 const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptions, Number.parseInt(process.env.MAX_ACTIVE_SHARED_TRANSCRIPTIONS || '2', 10) || 2));
 const polzaAiKey = String(process.env.POLZA_AI_KEY || '').trim();
 const polzaTranscriptionModel = String(process.env.POLZA_TRANSCRIPTION_MODEL || 'aiesa/transcribe').trim();
-const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'groq').trim().toLowerCase();
+const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'polza').trim().toLowerCase();
 const subtitleDelaySeconds = Math.max(0, Math.min(3, Number(process.env.SUBTITLE_DELAY_SECONDS) || 0));
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
@@ -903,6 +903,35 @@ async function transcribePolzaAudio(audioPath, tempDir, apiKey, totalDuration, o
   };
 }
 
+function retimePolzaTranscript(polzaPayload, timingPayload) {
+  const timingSegments = (timingPayload?.segments || [])
+    .map((segment, id) => ({
+      id,
+      start: Number(segment?.start),
+      end: Number(segment?.end),
+      text: cleanSubtitleText(segment?.text),
+    }))
+    .filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end) && segment.end > segment.start && segment.text);
+  const referenceTranscript = (polzaPayload?.segments || [])
+    .map((segment) => cleanSubtitleText(segment?.text))
+    .filter(Boolean)
+    .join(' ');
+  if (!timingSegments.length || !referenceTranscript) return polzaPayload;
+
+  return {
+    ...polzaPayload,
+    text: timingSegments.map((segment) => segment.text).join(' '),
+    duration: Number(timingPayload?.duration) || Number(polzaPayload?.duration) || 0,
+    language: String(timingPayload?.language || polzaPayload?.language || '').trim(),
+    segments: timingSegments,
+    provider: 'polza',
+    model: polzaPayload?.model || polzaTranscriptionModel,
+    recognition_reference: referenceTranscript,
+    timing_provider: 'groq',
+    timing_model: timingPayload?.model || 'whisper-large-v3',
+  };
+}
+
 const whisperLanguageCodes = new Map([
   ['afrikaans', 'af'], ['albanian', 'sq'], ['amharic', 'am'], ['arabic', 'ar'],
   ['armenian', 'hy'], ['assamese', 'as'], ['azerbaijani', 'az'], ['bashkir', 'ba'],
@@ -977,7 +1006,7 @@ function groqRetryDelayMs(response) {
   return 30_000;
 }
 
-async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => {}) {
+async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => {}, referenceTranscript = '') {
   const models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
   let lastError;
   for (let round = 0; round < 3; round += 1) {
@@ -1025,11 +1054,16 @@ async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => 
             messages: [
               {
                 role: 'system',
-                content: 'You are a professional subtitle translator. Translate every supplied segment into natural Serbian Latin (sr-Latn). Preserve meaning, names, numbers and tone. If text is already Serbian, return it unchanged. Return exactly one non-empty translation for every input id. Never merge, split, omit, renumber or explain segments.',
+                content: 'You are a professional Serbian subtitle editor. Translate every supplied segment into natural Serbian Latin (sr-Latn). The optional Aiesa reference transcript is authoritative for correcting recognition mistakes, names and wording, but it may omit some speech. Keep any timed speech missing from the reference. Preserve the supplied segment ids and timing structure. Return exactly one non-empty text for every input id. Never merge, split, omit, renumber or explain segments.',
               },
               {
                 role: 'user',
-                content: JSON.stringify({ target_language: 'Serbian', target_script: 'Latin', segments }),
+                content: JSON.stringify({
+                  target_language: 'Serbian',
+                  target_script: 'Latin',
+                  segments,
+                  ...(referenceTranscript ? { aiesa_reference_transcript: referenceTranscript } : {}),
+                }),
               },
             ],
           }),
@@ -1076,8 +1110,9 @@ async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => 
 async function translatePayloadToSerbian(payload, apiKey, onUpdate = () => {}) {
   const detectedLanguage = String(payload?.language || '').trim();
   const sourceLanguage = normalizeWhisperLanguage(detectedLanguage) || detectedLanguage.toLowerCase() || 'unknown';
+  const recognitionReference = String(payload?.recognition_reference || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
   payload.source_language = sourceLanguage;
-  if (isSerbianLanguage(detectedLanguage)) {
+  if (isSerbianLanguage(detectedLanguage) && !recognitionReference) {
     payload.language = 'sr';
     payload.translated = false;
     return payload;
@@ -1103,7 +1138,7 @@ async function translatePayloadToSerbian(payload, apiKey, onUpdate = () => {}) {
         stage: 'Ждём обновления лимита Groq для перевода',
         etaSeconds: Math.ceil(delayMs / 1000),
       });
-    });
+    }, recognitionReference);
     translatedBatch.translations.forEach((text, id) => translations.set(id, text));
     models.add(translatedBatch.model);
   }
@@ -1116,6 +1151,7 @@ async function translatePayloadToSerbian(payload, apiKey, onUpdate = () => {}) {
   payload.translated = true;
   payload.translation_model = [...models].join(',');
   payload.target_script = 'Latn';
+  delete payload.recognition_reference;
   return payload;
 }
 
@@ -1323,11 +1359,21 @@ async function processVideoTranscription(sourcePath, credentials, onUpdate = () 
       ? Math.max(35, Math.min(15 * 60, (videoDuration || 600) * 0.8))
       : Math.max(25, Math.min(180, (videoDuration || 600) * 0.08));
     const transcriptionStage = usesPolza
-      ? 'Aiesa распознаёт речь и расставляет таймкоды'
+      ? 'Aiesa распознаёт речь, Whisper синхронизирует таймкоды'
       : 'Groq определяет язык и распознаёт речь';
     const payload = await runEstimatedStage(
       usesPolza
-        ? transcribePolzaAudio(audioPath, tempDir, credentials.apiKey, videoDuration, audio)
+        ? Promise.all([
+          transcribePolzaAudio(audioPath, tempDir, credentials.apiKey, videoDuration, audio),
+          credentials.groqApiKey
+            ? transcribeWithFallback(audio, credentials.groqApiKey).catch((error) => {
+              console.warn('Whisper не смог синхронизировать таймкоды Aiesa:', error.message);
+              return null;
+            })
+            : Promise.resolve(null),
+        ]).then(([polzaPayload, timingPayload]) => (
+          timingPayload ? retimePolzaTranscript(polzaPayload, timingPayload) : polzaPayload
+        ))
         : transcribeWithFallback(audio, credentials.apiKey),
       { from: 60, to: 82, expectedSeconds: transcriptionEstimate, onUpdate, stage: transcriptionStage },
     );
