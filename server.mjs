@@ -97,8 +97,8 @@ const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.
 const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptions, Number.parseInt(process.env.MAX_ACTIVE_SHARED_TRANSCRIPTIONS || '2', 10) || 2));
 const polzaAiKey = String(process.env.POLZA_AI_KEY || '').trim();
 const polzaTranscriptionModel = String(process.env.POLZA_TRANSCRIPTION_MODEL || 'aiesa/transcribe').trim();
-const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'auto').trim().toLowerCase();
-const subtitleDelaySeconds = Math.max(0, Math.min(3, Number(process.env.SUBTITLE_DELAY_SECONDS) || 2));
+const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'groq').trim().toLowerCase();
+const subtitleDelaySeconds = Math.max(0, Math.min(3, Number(process.env.SUBTITLE_DELAY_SECONDS) || 0));
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
 );
