@@ -533,6 +533,20 @@ function publishedVideoType(filename) {
   return types.get(path.extname(filename).toLocaleLowerCase('en')) || null;
 }
 
+function resolvePublishedVideoType(filename, mimeType) {
+  const fromFilename = publishedVideoType(filename);
+  if (fromFilename) return fromFilename;
+  const normalizedMimeType = String(mimeType || '').trim().toLocaleLowerCase('en');
+  const supportedMimeTypes = new Set([
+    'video/mp4',
+    'video/quicktime',
+    'video/webm',
+    'video/x-matroska',
+    'video/x-msvideo',
+  ]);
+  return supportedMimeTypes.has(normalizedMimeType) ? normalizedMimeType : null;
+}
+
 function normalizePublishedSegments(value) {
   let parsed;
   if (Array.isArray(value)) {
@@ -740,7 +754,7 @@ app.post('/api/public/uploads', async (req, res) => {
   const originalFilename = String(req.body.filename || '').trim().slice(0, 255);
   const size = Number(req.body.size);
   const segments = normalizePublishedSegments(req.body.transcript);
-  const videoType = publishedVideoType(originalFilename);
+  const videoType = resolvePublishedVideoType(originalFilename, req.body.mimeType);
 
   if (req.body.rightsConfirmed !== true) return res.status(400).json({ error: 'Подтвердите право на публичное размещение видео.' });
   if (title.length < 2) return res.status(400).json({ error: 'Укажите название длиной не менее двух символов.' });
