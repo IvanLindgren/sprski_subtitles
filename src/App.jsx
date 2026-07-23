@@ -1483,6 +1483,34 @@ function remainingLabel(seconds, locale = 'ru') {
   return locale === 'en' ? `about ${minutes} min ${remainder} sec left` : `осталось примерно ${minutes} мин ${remainder} сек`;
 }
 
+function localizedProgressStage(stage, locale) {
+  if (locale !== 'en' || !stage) return stage;
+  const dynamicTranslations = [
+    [/^Переводим субтитры на сербский \((.+)\)$/, 'Translating subtitles into Serbian ($1)'],
+    [/^Проверяем пропуск в субтитрах \((.+)\)$/, 'Checking a subtitle gap ($1)'],
+    [/^Передаём видео частями: (.+)$/, 'Uploading video in chunks: $1'],
+  ];
+  for (const [pattern, translation] of dynamicTranslations) {
+    if (pattern.test(stage)) return stage.replace(pattern, translation);
+  }
+  return {
+    'Подготавливаем видео к загрузке': 'Preparing the video for upload',
+    'Загружаем видео на сервер': 'Uploading the video',
+    'Получаем видео от пользователя': 'Receiving the video',
+    'Видео загружено на сервер': 'Video uploaded',
+    'Извлекаем и сжимаем аудио': 'Extracting and compressing audio',
+    'Проверяем аудиодорожку': 'Checking the audio track',
+    'Aiesa распознаёт речь, Whisper синхронизирует таймкоды': 'Aiesa is recognizing speech and Whisper is aligning timestamps',
+    'Groq определяет язык и распознаёт речь': 'Groq is detecting the language and recognizing speech',
+    'Проверяем видео на пропуски в субтитрах': 'Checking the video for missing subtitles',
+    'Ждём доступности модели перевода': 'Waiting for the translation model',
+    'Сохраняем фрагменты и таймкоды': 'Saving segments and timestamps',
+    'Субтитры готовы': 'Subtitles are ready',
+    'Распознавание остановлено': 'Processing stopped',
+    'Восстанавливаем фоновую задачу': 'Restoring the background job',
+  }[stage] || stage;
+}
+
 function ProcessingBanner({ kind, progress }) {
   const { locale, t } = useUiLanguage();
   if (!kind) return null;
@@ -1499,7 +1527,7 @@ function ProcessingBanner({ kind, progress }) {
         </div>
         <div className="processing-progress-track"><span style={{ width: `${percent}%` }} /></div>
         <div className="processing-progress-copy">
-          <span>{progress.stage || copy}</span>
+          <span>{localizedProgressStage(progress.stage, locale) || copy}</span>
           <small>{remaining || (percent >= 60 && percent < 99 ? t('Сервис отвечает дольше обычного, задача продолжает выполняться', 'The service is taking longer than usual, but the job is still running') : t('оцениваем оставшееся время', 'estimating the remaining time'))}</small>
         </div>
       </div>
