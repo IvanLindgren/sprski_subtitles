@@ -108,6 +108,7 @@ async function publishVideoInChunks(file, metadata, onProgress) {
   let uploadedBytes = 0;
   let completedParts = 0;
   let nextPartIndex = 0;
+  const uploadController = new AbortController();
 
   const uploadPart = async (partIndex) => {
     const partNumber = partIndex + 1;
@@ -121,6 +122,7 @@ async function publishVideoInChunks(file, metadata, onProgress) {
           method: 'PUT',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: chunk,
+          signal: uploadController.signal,
         });
         await responsePayload(response);
         uploadedBytes += chunk.size;
@@ -135,7 +137,7 @@ async function publishVideoInChunks(file, metadata, onProgress) {
         return;
       } catch (error) {
         lastError = error;
-        if (error.status && error.status < 500 && error.status !== 408 && error.status !== 429) break;
+        if (error.status === 507 || (error.status && error.status < 500 && error.status !== 408 && error.status !== 429)) break;
         if (attempt < 3) {
           onProgress({
             percent: 3 + ((uploadedBytes / file.size) * 90),
@@ -171,6 +173,7 @@ async function publishVideoInChunks(file, metadata, onProgress) {
     onProgress({ percent: 100, stage: 'Публикация готова', etaSeconds: 0 });
     return result;
   } catch (error) {
+    uploadController.abort();
     fetch(apiUrl(`/api/public/uploads/${session.sessionId}`), { method: 'DELETE' }).catch(() => {});
     throw error;
   }

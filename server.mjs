@@ -18,7 +18,18 @@ import { notifyIndexNow } from './indexnow.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  statfs,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -36,6 +47,9 @@ const canonicalAliases = new Set([
 const maxVideoBytes = 2 * 1024 * 1024 * 1024;
 const publicUploadChunkBytes = 8 * 1024 * 1024;
 const publicUploadTtlMs = 6 * 60 * 60 * 1000;
+const supabaseSingleObjectBytes = 45 * 1024 * 1024;
+const localMediaRoot = path.resolve(process.env.PUBLIC_MEDIA_DIR || path.join(process.cwd(), '.public-media'));
+const localUploadRoot = path.join(localMediaRoot, '.uploads');
 const managedYtDlpPath = process.env.YOUTUBE_DL_PATH
   || path.join(process.cwd(), '.tools', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const managedYtDlpAvailable = existsSync(managedYtDlpPath);
@@ -728,7 +742,48 @@ async function savePublicMetadata(metadata) {
   }));
 }
 
+async function ensureLocalMediaCapacity(size) {
+  await mkdir(localUploadRoot, { recursive: true });
+  const disk = await statfs(localMediaRoot);
+  const availableBytes = Number(disk.bavail) * Number(disk.bsize);
+  const requiredBytes = (size * 2) + (2 * 1024 * 1024 * 1024);
+  if (availableBytes < requiredBytes) {
+    const error = new Error('На сервере недостаточно свободного места для этого видео. Напишите владельцу сайта.');
+    error.status = 507;
+    throw error;
+  }
+}
+
+async function assembleLocalPublicVideo(session) {
+  const finalDirectory = path.join(localMediaRoot, 'videos', session.id);
+  const finalPath = path.join(finalDirectory, session.filename);
+  const assemblingPath = path.join(session.tempDirectory, `${session.filename}.assembling`);
+  await mkdir(finalDirectory, { recursive: true });
+  const output = await open(assemblingPath, 'w');
+  try {
+    let position = 0;
+    for (let partNumber = 1; partNumber <= session.totalParts; partNumber += 1) {
+      const part = session.parts.get(partNumber);
+      const buffer = await readFile(part.path);
+      await output.write(buffer, 0, buffer.length, position);
+      position += buffer.length;
+    }
+    await output.sync();
+  } finally {
+    await output.close();
+  }
+  await rm(finalPath, { force: true }).catch(() => {});
+  await rename(assemblingPath, finalPath);
+  session.finalPath = finalPath;
+  return `https://${canonicalHost}/media/videos/${encodeURIComponent(session.id)}/${encodeURIComponent(session.filename)}`;
+}
+
 async function abortPublicUpload(session) {
+  if (session?.storage === 'local') {
+    if (session.tempDirectory) await rm(session.tempDirectory, { recursive: true, force: true }).catch(() => {});
+    if (session.finalPath) await rm(session.finalPath, { force: true }).catch(() => {});
+    return;
+  }
   if (!session?.uploadId) return;
   await objectStorageClient.send(new AbortMultipartUploadCommand({
     Bucket: objectStorage.bucket,
@@ -775,15 +830,25 @@ app.post('/api/public/uploads', async (req, res) => {
     const filename = safeFilename(originalFilename);
     const videoKey = `videos/${id}/${filename}`;
     const subtitleKey = `subtitles/${id}.vtt`;
-    const multipart = await objectStorageClient.send(new CreateMultipartUploadCommand({
-      Bucket: objectStorage.bucket,
-      Key: videoKey,
-      ContentType: videoType,
-      CacheControl: 'public, max-age=31536000, immutable',
-    }));
-    if (!multipart.UploadId) throw new Error('Хранилище не вернуло идентификатор загрузки.');
-
     const sessionId = randomUUID();
+    const storage = size > supabaseSingleObjectBytes ? 'local' : 's3';
+    let uploadId = null;
+    let tempDirectory = null;
+    if (storage === 'local') {
+      await ensureLocalMediaCapacity(size);
+      tempDirectory = path.join(localUploadRoot, sessionId);
+      await mkdir(tempDirectory, { recursive: true });
+    } else {
+      const multipart = await objectStorageClient.send(new CreateMultipartUploadCommand({
+        Bucket: objectStorage.bucket,
+        Key: videoKey,
+        ContentType: videoType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      }));
+      if (!multipart.UploadId) throw new Error('Хранилище не вернуло идентификатор загрузки.');
+      uploadId = multipart.UploadId;
+    }
+
     session = {
       sessionId,
       id,
@@ -794,9 +859,12 @@ app.post('/api/public/uploads', async (req, res) => {
       size,
       segments,
       videoType,
+      filename,
       videoKey,
       subtitleKey,
-      uploadId: multipart.UploadId,
+      storage,
+      uploadId,
+      tempDirectory,
       totalParts: Math.ceil(size / publicUploadChunkBytes),
       parts: new Map(),
       ip: requestIp,
@@ -804,7 +872,7 @@ app.post('/api/public/uploads', async (req, res) => {
       completing: false,
     };
     publicUploadSessions.set(sessionId, session);
-    console.log(`[public-upload] Начата загрузка ${id}: ${session.totalParts} частей, ${(size / 1024 / 1024).toFixed(1)} МБ`);
+    console.log(`[public-upload] Начата загрузка ${id}: ${session.totalParts} частей, ${(size / 1024 / 1024).toFixed(1)} МБ, хранилище ${storage}`);
     return res.status(201).json({
       sessionId,
       chunkSize: publicUploadChunkBytes,
@@ -814,7 +882,7 @@ app.post('/api/public/uploads', async (req, res) => {
   } catch (error) {
     if (session) await abortPublicUpload(session);
     console.error('Не удалось начать публикацию:', error);
-    return res.status(502).json({ error: error.message || 'Не удалось начать загрузку видео в хранилище.' });
+    return res.status(error.status || 502).json({ error: error.message || 'Не удалось начать загрузку видео в хранилище.' });
   }
 });
 
@@ -838,22 +906,31 @@ app.put(
     }
 
     try {
-      const uploaded = await objectStorageClient.send(new UploadPartCommand({
-        Bucket: objectStorage.bucket,
-        Key: session.videoKey,
-        UploadId: session.uploadId,
-        PartNumber: partNumber,
-        Body: req.body,
-        ContentLength: req.body.length,
-      }));
-      if (!uploaded.ETag) throw new Error('Хранилище не подтвердило загруженную часть.');
-      session.parts.set(partNumber, { ETag: uploaded.ETag, PartNumber: partNumber });
+      if (session.storage === 'local') {
+        const partPath = path.join(session.tempDirectory, `${String(partNumber).padStart(5, '0')}.part`);
+        await writeFile(partPath, req.body);
+        session.parts.set(partNumber, { path: partPath, length: req.body.length, PartNumber: partNumber });
+      } else {
+        const uploaded = await objectStorageClient.send(new UploadPartCommand({
+          Bucket: objectStorage.bucket,
+          Key: session.videoKey,
+          UploadId: session.uploadId,
+          PartNumber: partNumber,
+          Body: req.body,
+          ContentLength: req.body.length,
+        }));
+        if (!uploaded.ETag) throw new Error('Хранилище не подтвердило загруженную часть.');
+        session.parts.set(partNumber, { ETag: uploaded.ETag, PartNumber: partNumber });
+      }
       session.expiresAt = Date.now() + publicUploadTtlMs;
       console.log(`[public-upload] ${session.id}: часть ${partNumber}/${session.totalParts}`);
       return res.json({ partNumber, uploadedParts: session.parts.size, totalParts: session.totalParts });
     } catch (error) {
       console.error(`[public-upload] Ошибка части ${partNumber} для ${session.id}:`, error);
-      return res.status(502).json({ error: 'Не удалось сохранить часть видео. Браузер повторит попытку.' });
+      const noSpace = error?.code === 'ENOSPC';
+      return res.status(noSpace ? 507 : 502).json({
+        error: noSpace ? 'На сервере закончилось свободное место для видео.' : 'Не удалось сохранить часть видео. Браузер повторит попытку.',
+      });
     }
   },
 );
@@ -868,14 +945,20 @@ app.post('/api/public/uploads/:sessionId/complete', async (req, res) => {
   session.completing = true;
 
   try {
-    await objectStorageClient.send(new CompleteMultipartUploadCommand({
-      Bucket: objectStorage.bucket,
-      Key: session.videoKey,
-      UploadId: session.uploadId,
-      MultipartUpload: {
-        Parts: [...session.parts.values()].sort((left, right) => left.PartNumber - right.PartNumber),
-      },
-    }));
+    let videoUrl;
+    if (session.storage === 'local') {
+      videoUrl = await assembleLocalPublicVideo(session);
+    } else {
+      await objectStorageClient.send(new CompleteMultipartUploadCommand({
+        Bucket: objectStorage.bucket,
+        Key: session.videoKey,
+        UploadId: session.uploadId,
+        MultipartUpload: {
+          Parts: [...session.parts.values()].sort((left, right) => left.PartNumber - right.PartNumber),
+        },
+      }));
+      videoUrl = publicObjectUrl(session.videoKey);
+    }
 
     await objectStorageClient.send(new PutObjectCommand({
       Bucket: objectStorage.bucket,
@@ -898,7 +981,7 @@ app.post('/api/public/uploads/:sessionId/complete', async (req, res) => {
       mimeType: session.videoType,
       duration: Math.max(...session.segments.map((segment) => segment.end)),
       segmentsCount: session.segments.length,
-      videoUrl: publicObjectUrl(session.videoKey),
+      videoUrl,
       subtitleUrl: publicObjectUrl(session.subtitleKey),
       thumbnailUrl: genericPublicThumbnailUrl,
       segments: session.segments,
@@ -909,6 +992,7 @@ app.post('/api/public/uploads/:sessionId/complete', async (req, res) => {
     } catch (thumbnailError) {
       console.warn('Не удалось создать превью публикации:', thumbnailError.message);
     }
+    if (session.storage === 'local') await rm(session.tempDirectory, { recursive: true, force: true });
     publicUploadSessions.delete(session.sessionId);
     announcePublicPage(metadata);
     console.log(`[public-upload] Публикация ${session.id} завершена`);
@@ -916,7 +1000,7 @@ app.post('/api/public/uploads/:sessionId/complete', async (req, res) => {
   } catch (error) {
     session.completing = false;
     console.error('Не удалось завершить публикацию:', error);
-    return res.status(502).json({ error: error.message || 'Не удалось завершить публикацию видео.' });
+    return res.status(error?.code === 'ENOSPC' ? 507 : 502).json({ error: error.message || 'Не удалось завершить публикацию видео.' });
   }
 });
 
@@ -2555,6 +2639,12 @@ app.get('/sitemap.xml', async (_req, res) => {
   }
 });
 
+app.use('/media', express.static(localMediaRoot, {
+  dotfiles: 'deny',
+  immutable: true,
+  maxAge: '365d',
+  index: false,
+}));
 app.use(express.static(clientPath, { index: false }));
 app.use((req, res, next) => {
   if ((req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api/')) {

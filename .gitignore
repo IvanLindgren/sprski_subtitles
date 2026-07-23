@@ -3,5 +3,6 @@ dist/
 .tools/
 .env
 testvideo/
+.public-media/
 *.log
 .DS_Store
