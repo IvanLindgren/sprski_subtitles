@@ -18,6 +18,7 @@ import {
   Play,
   Plus,
   Search,
+  Send,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -44,6 +45,8 @@ const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/
 const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const PUBLIC_UPLOAD_CONCURRENCY = 3;
+const TELEGRAM_NOTICE_STORAGE_KEY = 'citavuk-telegram-notice-seen-at';
+const TELEGRAM_NOTICE_INTERVAL = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_PAGE_TITLE = 'Сербские субтитры для видео онлайн — Читавук-речник';
 const DEFAULT_PAGE_DESCRIPTION = 'Онлайн-сервис создаёт сербские субтитры из видео на русском, английском и других языках, экспортирует SRT, VTT и MP4 и помогает собирать личный словарь.';
 
@@ -1295,6 +1298,21 @@ function ProcessingBanner({ kind, progress }) {
   );
 }
 
+function TelegramNotice({ onClose }) {
+  return (
+    <aside className="telegram-notice" role="status" aria-live="polite">
+      <div className="telegram-notice-icon"><Send size={19} strokeWidth={1.8} /></div>
+      <div className="telegram-notice-copy">
+        <strong>Читавук в Telegram</strong>
+        <p>Следите за обновлениями сайта и находите новые материалы для изучения сербского и хорватского.</p>
+        <a href="https://t.me/citavuk" target="_blank" rel="noreferrer">Открыть канал <ChevronRight size={14} /></a>
+      </div>
+      <button type="button" onClick={onClose} aria-label="Закрыть сообщение о Telegram-канале"><X size={16} /></button>
+      <span className="telegram-notice-timer" aria-hidden="true" />
+    </aside>
+  );
+}
+
 export default function App() {
   const [projects, setProjects] = useState(loadProjects);
   const [activeId, setActiveId] = useState(null);
@@ -1312,6 +1330,7 @@ export default function App() {
   const [transcriptionProgress, setTranscriptionProgress] = useState(null);
   const [transcriptionError, setTranscriptionError] = useState('');
   const [toast, setToast] = useState('');
+  const [telegramNoticeOpen, setTelegramNoticeOpen] = useState(false);
   const activeProject = projects.find((project) => project.id === activeId);
 
   useEffect(() => {
@@ -1327,6 +1346,23 @@ export default function App() {
     const timer = setTimeout(() => setToast(''), 2600);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (welcomeOpen) return undefined;
+    const lastShownAt = Number(localStorage.getItem(TELEGRAM_NOTICE_STORAGE_KEY) || 0);
+    if (Date.now() - lastShownAt < TELEGRAM_NOTICE_INTERVAL) return undefined;
+    const showTimer = setTimeout(() => {
+      localStorage.setItem(TELEGRAM_NOTICE_STORAGE_KEY, String(Date.now()));
+      setTelegramNoticeOpen(true);
+    }, 700);
+    return () => clearTimeout(showTimer);
+  }, [welcomeOpen]);
+
+  useEffect(() => {
+    if (!telegramNoticeOpen) return undefined;
+    const closeTimer = setTimeout(() => setTelegramNoticeOpen(false), 5000);
+    return () => clearTimeout(closeTimer);
+  }, [telegramNoticeOpen]);
 
   const notify = (message) => setToast(message);
 
@@ -1665,6 +1701,7 @@ export default function App() {
       {welcomeOpen && <WelcomeModal onClose={closeWelcome} />}
       {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
       <ProcessingBanner kind={processing} progress={transcriptionProgress} />
+      {telegramNoticeOpen && <TelegramNotice onClose={() => setTelegramNoticeOpen(false)} />}
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
   );
