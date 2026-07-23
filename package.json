@@ -26,6 +26,7 @@
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest",
+    "web-push": "^3.6.7",
     "yt-dlp-exec": "latest"
   }
 }

@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Bell,
+  BellRing,
   BookOpen,
   Check,
   ChevronRight,
@@ -43,12 +45,42 @@ const PROJECTS_KEY = 'recnik-projects-v1';
 const API_KEY_STORAGE_KEY = 'recnik-groq-key';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
+const PUBLIC_CATEGORY_EN = {
+  все: 'all',
+  фильм: 'film',
+  мультфильм: 'animation',
+  блог: 'blog',
+  интервью: 'interview',
+  новости: 'news',
+  обучение: 'learning',
+  другое: 'other',
+};
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const PUBLIC_UPLOAD_CONCURRENCY = 3;
 const TELEGRAM_NOTICE_STORAGE_KEY = 'citavuk-telegram-notice-seen-at';
 const TELEGRAM_NOTICE_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+const LANGUAGE_STORAGE_KEY = 'citavuk-language';
+const PENDING_TRANSCRIPTION_KEY = 'citavuk-pending-transcription';
 const DEFAULT_PAGE_TITLE = 'Сербские субтитры для видео онлайн — Читавук-речник';
 const DEFAULT_PAGE_DESCRIPTION = 'Онлайн-сервис создаёт сербские субтитры из видео на русском, английском и других языках, экспортирует SRT, VTT и MP4 и помогает собирать личный словарь.';
+const ENGLISH_PAGE_TITLE = 'Serbian subtitles for any video online — Čitavuk';
+const ENGLISH_PAGE_DESCRIPTION = 'Create synchronized Serbian subtitles from videos in English, Russian and other languages, export SRT, VTT or MP4, and build a personal vocabulary.';
+const LanguageContext = createContext({ locale: 'ru', setLocale: () => {} });
+
+function useUiLanguage() {
+  const { locale, setLocale } = useContext(LanguageContext);
+  return {
+    locale,
+    setLocale,
+    t: (russian, english) => (locale === 'en' ? english : russian),
+  };
+}
+
+function initialLocale() {
+  const queryLocale = new URLSearchParams(window.location.search).get('lang');
+  if (queryLocale === 'en' || queryLocale === 'ru') return queryLocale;
+  return localStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en' ? 'en' : 'ru';
+}
 
 function readBrowserRoute() {
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
@@ -58,21 +90,30 @@ function readBrowserRoute() {
   return { page: 'landing', videoSlug: null };
 }
 
-function PageMetadata({ title = DEFAULT_PAGE_TITLE, description = DEFAULT_PAGE_DESCRIPTION, path = '/' }) {
+function PageMetadata({ title, description, path = '/' }) {
+  const { locale } = useUiLanguage();
+  const resolvedTitle = title || (locale === 'en' ? ENGLISH_PAGE_TITLE : DEFAULT_PAGE_TITLE);
+  const resolvedDescription = description || (locale === 'en' ? ENGLISH_PAGE_DESCRIPTION : DEFAULT_PAGE_DESCRIPTION);
+  const separator = path.includes('?') ? '&' : '?';
+  const localizedPath = locale === 'en' ? `${path}${separator}lang=en` : path;
   useEffect(() => {
-    document.title = title;
+    document.title = resolvedTitle;
+    document.documentElement.lang = locale;
     const descriptionTag = document.querySelector('meta[name="description"]');
-    if (descriptionTag) descriptionTag.setAttribute('content', description);
+    if (descriptionTag) descriptionTag.setAttribute('content', resolvedDescription);
     const canonical = document.querySelector('link[rel="canonical"]');
-    if (canonical) canonical.setAttribute('href', `https://serbiansubtitles.online${path}`);
-    document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => link.setAttribute('href', `https://serbiansubtitles.online${path}`));
+    if (canonical) canonical.setAttribute('href', `https://serbiansubtitles.online${localizedPath}`);
+    document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => {
+      const language = link.getAttribute('hreflang');
+      link.setAttribute('href', `https://serbiansubtitles.online${language === 'en' ? `${path}${separator}lang=en` : path}`);
+    });
     const ogTitle = document.querySelector('meta[property="og:title"]');
     const ogDescription = document.querySelector('meta[property="og:description"]');
     const ogUrl = document.querySelector('meta[property="og:url"]');
-    if (ogTitle) ogTitle.setAttribute('content', title);
-    if (ogDescription) ogDescription.setAttribute('content', description);
-    if (ogUrl) ogUrl.setAttribute('content', `https://serbiansubtitles.online${path}`);
-  }, [description, path, title]);
+    if (ogTitle) ogTitle.setAttribute('content', resolvedTitle);
+    if (ogDescription) ogDescription.setAttribute('content', resolvedDescription);
+    if (ogUrl) ogUrl.setAttribute('content', `https://serbiansubtitles.online${localizedPath}`);
+  }, [locale, localizedPath, path, resolvedDescription, resolvedTitle, separator]);
   return null;
 }
 
@@ -82,6 +123,32 @@ function apiUrl(pathname) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)));
+}
+
+async function ensurePushSubscription(requestPermission = false) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return null;
+  if (Notification.permission === 'denied') return null;
+  if (requestPermission && Notification.permission === 'default') {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return null;
+  }
+  if (Notification.permission !== 'granted') return null;
+  const keyResponse = await fetch(apiUrl('/api/notifications/public-key'), { cache: 'no-store' });
+  const keyPayload = await keyResponse.json().catch(() => ({}));
+  if (!keyResponse.ok || !keyPayload.enabled || !keyPayload.publicKey) return null;
+  const registration = await navigator.serviceWorker.register('/sw.js');
+  const current = await registration.pushManager.getSubscription();
+  return current || registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(keyPayload.publicKey),
+  });
 }
 
 async function responsePayload(response) {
@@ -370,7 +437,12 @@ async function waitForTranscriptionJob(id, onProgress) {
     try {
       const response = await fetch(apiUrl(`/api/transcribe/jobs/${id}`), { cache: 'no-store' });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || `Не удалось получить состояние задачи: ${response.status}.`);
+      if (!response.ok) {
+        const error = new Error(payload.error || `Не удалось получить состояние задачи: ${response.status}.`);
+        error.status = response.status;
+        error.code = payload.code;
+        throw error;
+      }
       failedPolls = 0;
       onProgress({
         percent: Number(payload.progress) || 0,
@@ -484,23 +556,31 @@ function BrandMark() {
   );
 }
 
-function Header({ inProject, inLibrary, onHome, onLibrary, onSettings }) {
+function Header({ inProject, inLibrary, onHome, onLibrary, onSettings, onNotifications, notificationsEnabled }) {
+  const { locale, setLocale, t } = useUiLanguage();
   const follow = (event, action) => {
     event.preventDefault();
     action();
   };
   return (
     <header className="site-header">
-      <a className="brand" href="/" onClick={(event) => follow(event, onHome)} aria-label="На главную">
+      <a className="brand" href="/" onClick={(event) => follow(event, onHome)} aria-label={t('На главную', 'Home')}>
         <BrandMark />
-        <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>сербские субтитры и видеословарь</small></span>
+        <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>{t('сербские субтитры и видеословарь', 'Serbian subtitles and video dictionary')}</small></span>
       </a>
       <div className="header-actions">
-        <nav className="site-nav" aria-label="Основная навигация">
-          <a className={!inLibrary ? 'is-active' : ''} href="/" onClick={(event) => follow(event, onHome)}><Upload size={17} /><span>{inProject ? 'Мои видео' : 'Создать субтитры'}</span></a>
-          <a className={inLibrary ? 'is-active' : ''} href="/subtitles" onClick={(event) => follow(event, onLibrary)}><Globe2 size={17} /><span>Библиотека</span></a>
+        <nav className="site-nav" aria-label={t('Основная навигация', 'Main navigation')}>
+          <a className={!inLibrary ? 'is-active' : ''} href="/" onClick={(event) => follow(event, onHome)}><Upload size={17} /><span>{inProject ? t('Мои видео', 'My videos') : t('Создать субтитры', 'Create subtitles')}</span></a>
+          <a className={inLibrary ? 'is-active' : ''} href="/subtitles" onClick={(event) => follow(event, onLibrary)}><Globe2 size={17} /><span>{t('Библиотека', 'Library')}</span></a>
         </nav>
-        <button className="icon-button" onClick={onSettings} aria-label="Настройки API">
+        <div className="language-switch" role="group" aria-label={t('Язык сайта', 'Site language')}>
+          <button className={locale === 'ru' ? 'is-active' : ''} onClick={() => setLocale('ru')} lang="ru">RU</button>
+          <button className={locale === 'en' ? 'is-active' : ''} onClick={() => setLocale('en')} lang="en">EN</button>
+        </div>
+        <button className={`icon-button ${notificationsEnabled ? 'is-enabled' : ''}`} onClick={onNotifications} aria-label={notificationsEnabled ? t('Уведомления включены', 'Notifications enabled') : t('Включить уведомления', 'Enable notifications')}>
+          {notificationsEnabled ? <BellRing size={20} /> : <Bell size={20} />}
+        </button>
+        <button className="icon-button" onClick={onSettings} aria-label={t('Настройки API', 'API settings')}>
           <Settings2 size={20} />
         </button>
       </div>
@@ -509,6 +589,7 @@ function Header({ inProject, inLibrary, onHome, onLibrary, onSettings }) {
 }
 
 function UploadZone({ onFile }) {
+  const { t } = useUiLanguage();
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
 
@@ -536,9 +617,9 @@ function UploadZone({ onFile }) {
         onChange={(event) => takeFile(event.target.files)}
       />
       <div className="upload-icon"><Upload size={27} strokeWidth={1.7} /></div>
-      <strong>Перетащите видео сюда</strong>
-      <span>или нажмите, чтобы выбрать файл</span>
-      <p className="upload-formats">Поддерживаются MP4, MOV, WEBM и MKV. Максимальный размер исходного видео составляет 2 ГБ.</p>
+      <strong>{t('Перетащите видео сюда', 'Drop your video here')}</strong>
+      <span>{t('или нажмите, чтобы выбрать файл', 'or click to choose a file')}</span>
+      <p className="upload-formats">{t('Поддерживаются MP4, MOV, WEBM и MKV. Максимальный размер исходного видео составляет 2 ГБ.', 'MP4, MOV, WEBM and MKV are supported. The maximum source video size is 2 GB.')}</p>
     </div>
   );
 }
@@ -555,6 +636,7 @@ function parseYoutubeUrlClient(value) {
 }
 
 function YoutubeDownload({ onImport, busy }) {
+  const { t } = useUiLanguage();
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [message, setMessage] = useState('');
 
@@ -563,7 +645,7 @@ function YoutubeDownload({ onImport, busy }) {
     if (busy) return;
     const normalizedUrl = parseYoutubeUrlClient(youtubeUrl);
     if (!normalizedUrl) {
-      setMessage('Вставьте полную ссылку youtube.com или youtu.be.');
+      setMessage(t('Вставьте полную ссылку youtube.com или youtu.be.', 'Paste a full youtube.com or youtu.be URL.'));
       return;
     }
     setMessage('');
@@ -573,31 +655,31 @@ function YoutubeDownload({ onImport, busy }) {
   const openSaveFrom = () => {
     const normalizedUrl = parseYoutubeUrlClient(youtubeUrl);
     if (!normalizedUrl) {
-      setMessage('Вставьте полную ссылку youtube.com или youtu.be.');
+      setMessage(t('Вставьте полную ссылку youtube.com или youtu.be.', 'Paste a full youtube.com or youtu.be URL.'));
       return;
     }
     navigator.clipboard?.writeText(normalizedUrl).catch(() => {});
     window.open(`https://ru.savefrom.net/153kn/sf?url=${encodeURIComponent(normalizedUrl)}`, '_blank', 'noopener,noreferrer');
-    setMessage('Ссылка скопирована. Скачайте MP4 в SaveFrom и загрузите файл выше.');
+    setMessage(t('Ссылка скопирована. Скачайте MP4 в SaveFrom и загрузите файл выше.', 'The link was copied. Download the MP4 with SaveFrom and upload it above.'));
   };
 
   return (
     <div className="youtube-download">
-      <div className="youtube-download-title"><Play size={18} fill="currentColor" /><strong>Взять видео с YouTube</strong></div>
-      <p>Вставьте ссылку — Читавук сам скачает ролик и начнёт распознавание. Используйте только видео, которое вам разрешено скачивать.</p>
+      <div className="youtube-download-title"><Play size={18} fill="currentColor" /><strong>{t('Взять видео с YouTube', 'Import a YouTube video')}</strong></div>
+      <p>{t('Вставьте ссылку — Читавук сам скачает ролик и начнёт распознавание. Используйте только видео, которое вам разрешено скачивать.', 'Paste a link and Čitavuk will download the video and start transcription. Only use videos you are allowed to download.')}</p>
       <form onSubmit={submit} noValidate>
         <input
           type="url"
           value={youtubeUrl}
           onChange={(event) => { setYoutubeUrl(event.target.value); setMessage(''); }}
           placeholder="https://youtu.be/…"
-          aria-label="Ссылка на видео YouTube"
+          aria-label={t('Ссылка на видео YouTube', 'YouTube video URL')}
           disabled={busy}
         />
-        <button type="submit" disabled={busy}>{busy ? 'Скачиваем…' : 'Скачать и распознать'}</button>
+        <button type="submit" disabled={busy}>{busy ? t('Скачиваем…', 'Downloading…') : t('Скачать и распознать', 'Download and transcribe')}</button>
       </form>
       <button type="button" className="youtube-download-fallback" onClick={openSaveFrom} disabled={busy}>
-        Не получилось? Скачать вручную через SaveFrom
+        {t('Не получилось? Скачать вручную через SaveFrom', 'Not working? Download manually with SaveFrom')}
       </button>
       {message && <span className="youtube-download-message">{message}</span>}
     </div>
@@ -605,6 +687,7 @@ function YoutubeDownload({ onImport, busy }) {
 }
 
 function RecentProject({ project, onOpen, onDelete }) {
+  const { locale, t } = useUiLanguage();
   return (
     <article className="recent-card" onClick={() => onOpen(project.id)}>
       <div className="recent-thumb">
@@ -613,12 +696,12 @@ function RecentProject({ project, onOpen, onDelete }) {
       </div>
       <div className="recent-copy">
         <strong>{project.name}</strong>
-        <span>{project.transcript?.length || 0} {pluralizeRu(project.transcript?.length || 0, 'фрагмент', 'фрагмента', 'фрагментов')}, {project.glossary?.length || 0} {pluralizeRu(project.glossary?.length || 0, 'слово', 'слова', 'слов')} в словаре</span>
+        <span>{locale === 'en' ? `${project.transcript?.length || 0} segments, ${project.glossary?.length || 0} saved words` : `${project.transcript?.length || 0} ${pluralizeRu(project.transcript?.length || 0, 'фрагмент', 'фрагмента', 'фрагментов')}, ${project.glossary?.length || 0} ${pluralizeRu(project.glossary?.length || 0, 'слово', 'слова', 'слов')} в словаре`}</span>
       </div>
       <button
         className="subtle-icon"
         onClick={(event) => { event.stopPropagation(); onDelete(project.id); }}
-        aria-label="Удалить проект"
+        aria-label={t('Удалить проект', 'Delete project')}
       >
         <Trash2 size={16} />
       </button>
@@ -628,6 +711,7 @@ function RecentProject({ project, onOpen, onDelete }) {
 }
 
 function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, youtubeBusy }) {
+  const { locale, t } = useUiLanguage();
   return (
     <main className="landing">
       <PageMetadata />
@@ -636,19 +720,19 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 
       <section className="hero">
         <div className="hero-copy">
-          <h1>Сервис для создания сербских субтитров к видео на любом языке.</h1>
-          <p>Загрузите сербский, английский, русский или другой ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.</p>
-          <img className="hero-wolf" src="/assets/citavuk-guide.webp" alt="Читавук помогает разобраться с субтитрами" />
+          <h1>{t('Сервис для создания сербских субтитров к видео на любом языке.', 'Create Serbian subtitles for videos in any language.')}</h1>
+          <p>{t('Загрузите сербский, английский, русский или другой ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.', 'Upload a Serbian, English, Russian or any other video, get synchronized Serbian text, and build your personal vocabulary while watching.')}</p>
+          <img className="hero-wolf" src="/assets/citavuk-guide.webp" alt={t('Читавук помогает разобраться с субтитрами', 'Čitavuk helps you learn with subtitles')} />
         </div>
 
         <div className="upload-card">
           <div className="card-title">
-            <div><span>НОВОЕ ВИДЕО</span><h2>Начать разбор</h2></div>
+            <div><span>{t('НОВОЕ ВИДЕО', 'NEW VIDEO')}</span><h2>{t('Начать разбор', 'Start learning')}</h2></div>
           </div>
           <UploadZone onFile={onFile} />
           <YoutubeDownload onImport={onYoutubeImport} busy={youtubeBusy} />
-          <button className="demo-link" onClick={onDemo}><Play size={14} fill="currentColor" /> Открыть пример проекта</button>
-          <div className="privacy-note"><KeyRound size={15} /> Видео остается в памяти вашего браузера</div>
+          <button className="demo-link" onClick={onDemo}><Play size={14} fill="currentColor" /> {t('Открыть пример проекта', 'Open a demo project')}</button>
+          <div className="privacy-note"><KeyRound size={15} /> {t('Видео остается в памяти вашего браузера', 'Your video stays in this browser')}</div>
         </div>
       </section>
 
@@ -656,21 +740,21 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 
       <section className="process-story">
         <BookOpen size={25} />
-        <p>Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.</p>
+        <p>{t('Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.', 'Čitavuk detects the spoken language, translates the text into Serbian, synchronizes it with the video and makes every word interactive. Save unfamiliar words to your personal dictionary and export the result as VTT, SRT or an MP4 with embedded subtitles.')}</p>
       </section>
 
       <section className="seo-explainer" aria-labelledby="seo-explainer-title">
-        <div className="section-heading"><div><span>КАК ЭТО РАБОТАЕТ</span><h2 id="seo-explainer-title">Сербские субтитры без ручной разметки</h2></div></div>
+        <div className="section-heading"><div><span>{t('КАК ЭТО РАБОТАЕТ', 'HOW IT WORKS')}</span><h2 id="seo-explainer-title">{t('Сербские субтитры без ручной разметки', 'Serbian subtitles without manual timing')}</h2></div></div>
         <div className="seo-explainer-grid">
-          <article><h3>Загрузите видео</h3><p>Подойдут MP4, MOV, WEBM, MKV и другие распространённые форматы с русской, английской, сербской или другой речью.</p></article>
-          <article><h3>Получите сербский текст</h3><p>Сервис распознаёт речь, переводит реплики на естественный сербский язык и синхронизирует каждую фразу с видео.</p></article>
-          <article><h3>Смотрите или скачивайте</h3><p>Используйте субтитры в плеере, сохраняйте SRT и VTT, создавайте MP4 или публикуйте разрешённое видео в открытой библиотеке.</p></article>
+          <article><h3>{t('Загрузите видео', 'Upload a video')}</h3><p>{t('Подойдут MP4, MOV, WEBM, MKV и другие распространённые форматы с русской, английской, сербской или другой речью.', 'Use MP4, MOV, WEBM, MKV and other common formats with English, Russian, Serbian or any other speech.')}</p></article>
+          <article><h3>{t('Получите сербский текст', 'Get Serbian text')}</h3><p>{t('Сервис распознаёт речь, переводит реплики на естественный сербский язык и синхронизирует каждую фразу с видео.', 'The service recognizes speech, translates it into natural Serbian and synchronizes every line with the video.')}</p></article>
+          <article><h3>{t('Смотрите или скачивайте', 'Watch or download')}</h3><p>{t('Используйте субтитры в плеере, сохраняйте SRT и VTT, создавайте MP4 или публикуйте разрешённое видео в открытой библиотеке.', 'Use subtitles in the player, save SRT or VTT, create an MP4, or publish permitted videos in the public library.')}</p></article>
         </div>
       </section>
 
       {projects.length > 0 && (
         <section className="recent-section" id="my-videos">
-          <div className="section-heading"><div><span>ВАША ПОЛКА</span><h2>Недавние видео</h2></div><small>{projects.length} {pluralizeRu(projects.length, 'проект', 'проекта', 'проектов')}</small></div>
+          <div className="section-heading"><div><span>{t('ВАША ПОЛКА', 'YOUR SHELF')}</span><h2>{t('Недавние видео', 'Recent videos')}</h2></div><small>{locale === 'en' ? `${projects.length} projects` : `${projects.length} ${pluralizeRu(projects.length, 'проект', 'проекта', 'проектов')}`}</small></div>
           <div className="recent-list">
             {projects.slice(0, 4).map((project) => <RecentProject key={project.id} project={project} onOpen={onOpen} onDelete={onDelete} />)}
           </div>
@@ -681,6 +765,7 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 }
 
 function DemoPlayer({ currentTime, onTime, activeSegment }) {
+  const { t } = useUiLanguage();
   const [playing, setPlaying] = useState(false);
   useEffect(() => {
     if (!playing) return undefined;
@@ -696,7 +781,7 @@ function DemoPlayer({ currentTime, onTime, activeSegment }) {
       <div className="demo-label"><span>ДОРЋОЛ</span><small>Београд, 2026</small></div>
       {activeSegment && <div className="subtitle-overlay">{activeSegment.text}</div>}
       <div className="demo-controls">
-        <button onClick={() => setPlaying(!playing)} aria-label={playing ? 'Пауза' : 'Воспроизвести'}>
+        <button onClick={() => setPlaying(!playing)} aria-label={playing ? t('Пауза', 'Pause') : t('Воспроизвести', 'Play')}>
           {playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
         </button>
         <div className="demo-progress" onClick={(event) => onTime((event.nativeEvent.offsetX / event.currentTarget.clientWidth) * 32)}>
@@ -738,9 +823,10 @@ function SubtitleTrack({ segments }) {
 }
 
 function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSegment, onTranscribe, processing, transcriptionError, onDismissError }) {
+  const { t } = useUiLanguage();
   return (
     <section className="video-column">
-      <div className="project-kicker"><span>РАЗБОР ВИДЕО</span><small>{project.isDemo ? 'пример проекта' : `${formatBytes(project.size)}, ${project.type || 'видео'}`}</small></div>
+      <div className="project-kicker"><span>{t('РАЗБОР ВИДЕО', 'VIDEO WORKSPACE')}</span><small>{project.isDemo ? t('пример проекта', 'demo project') : `${formatBytes(project.size)}, ${project.type || t('видео', 'video')}`}</small></div>
       <div className="video-shell">
         {project.isDemo ? (
           <DemoPlayer currentTime={currentTime} onTime={onTime} activeSegment={activeSegment} />
@@ -751,23 +837,23 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
             </video>
           </div>
         ) : (
-          <div className="missing-video"><Film size={32} /><strong>Исходное видео не найдено</strong><span>Загрузите файл заново, чтобы продолжить.</span></div>
+          <div className="missing-video"><Film size={32} /><strong>{t('Исходное видео не найдено', 'Source video not found')}</strong><span>{t('Загрузите файл заново, чтобы продолжить.', 'Upload the file again to continue.')}</span></div>
         )}
       </div>
       {!project.transcript?.length && (
         <div className="transcribe-callout">
           <div className="callout-icon"><WandSparkles size={22} /></div>
-          <div><strong>Видео готово к распознаванию</strong><span>Читавук определит исходный язык, создаст сербские субтитры и сохранит точные таймкоды.</span></div>
+          <div><strong>{t('Видео готово к распознаванию', 'Video is ready for transcription')}</strong><span>{t('Читавук определит исходный язык, создаст сербские субтитры и сохранит точные таймкоды.', 'Čitavuk will detect the source language, create Serbian subtitles and preserve precise timestamps.')}</span></div>
           <button className="primary-button" onClick={() => onTranscribe()} disabled={Boolean(processing)}>
             {processing === 'transcribe' ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={17} />}
-            {processing === 'transcribe' ? 'Слушаем речь…' : 'Создать субтитры'}
+            {processing === 'transcribe' ? t('Слушаем речь…', 'Listening…') : t('Создать субтитры', 'Create subtitles')}
           </button>
         </div>
       )}
       {transcriptionError && (
         <div className="transcription-error" role="alert">
           <p>{transcriptionError}</p>
-          <button onClick={onDismissError} aria-label="Закрыть сообщение об ошибке"><X size={16} /></button>
+          <button onClick={onDismissError} aria-label={t('Закрыть сообщение об ошибке', 'Close error message')}><X size={16} /></button>
         </div>
       )}
     </section>
@@ -775,6 +861,7 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
 }
 
 function WordToken({ value, added, onAdd }) {
+  const { t } = useUiLanguage();
   const cleaned = cleanWord(value);
   if (!cleaned) return <>{value} </>;
   const leading = value.match(/^[^\p{L}]+/u)?.[0] || '';
@@ -783,7 +870,7 @@ function WordToken({ value, added, onAdd }) {
   return (
     <>
       {leading}
-      <button className={`word-token ${added ? 'is-saved' : ''}`} onClick={() => onAdd(cleaned)} title={added ? 'Уже в словаре' : 'Добавить в словарь'}>
+      <button className={`word-token ${added ? 'is-saved' : ''}`} onClick={() => onAdd(cleaned)} title={added ? t('Уже в словаре', 'Already saved') : t('Добавить в словарь', 'Add to dictionary')}>
         {token}
       </button>
       {trailing}{' '}
@@ -792,6 +879,7 @@ function WordToken({ value, added, onAdd }) {
 }
 
 function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSearch, onDownloadVtt, onDownloadSrt, onRetranscribe, onPublish, processing }) {
+  const { t } = useUiLanguage();
   const transcript = project.transcript || [];
   const saved = useMemo(() => new Set((project.glossary || []).map((item) => item.word)), [project.glossary]);
   const visible = transcript.filter((segment) => segment.text.toLocaleLowerCase('sr').includes(search.toLocaleLowerCase('sr')));
@@ -799,11 +887,11 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
   return (
     <section className="transcript-panel">
       <div className="panel-header">
-        <div><span className="panel-eyebrow">ТРАНСКРИПТ</span><h2>Текст видео</h2></div>
+        <div><span className="panel-eyebrow">{t('ТРАНСКРИПТ', 'TRANSCRIPT')}</span><h2>{t('Текст видео', 'Video text')}</h2></div>
         {transcript.length > 0 && (
           <div className="panel-actions">
-            <button className="publish-action" onClick={onPublish} disabled={processing === 'publish'} title="Опубликовать анонимно"><Globe2 size={15} /> Опубликовать</button>
-            <button onClick={() => onRetranscribe()} disabled={processing === 'transcribe'} title="Распознать заново"><Sparkles size={15} /> Повторить</button>
+            <button className="publish-action" onClick={onPublish} disabled={processing === 'publish'} title={t('Опубликовать анонимно', 'Publish anonymously')}><Globe2 size={15} /> {t('Опубликовать', 'Publish')}</button>
+            <button onClick={() => onRetranscribe()} disabled={processing === 'transcribe'} title={t('Распознать заново', 'Transcribe again')}><Sparkles size={15} /> {t('Повторить', 'Retry')}</button>
             <button onClick={onDownloadVtt}><Download size={15} /> VTT</button>
             <button onClick={onDownloadSrt}><Download size={15} /> SRT</button>
           </div>
@@ -812,8 +900,8 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
       {transcript.length > 0 ? (
         <>
           <div className="transcript-tools">
-            <div className="search-box"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Найти в тексте…" /></div>
-            <span><span className="click-dot" /> Нажмите на слово, чтобы перевести и сохранить</span>
+            <div className="search-box"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder={t('Найти в тексте…', 'Search the transcript…')} /></div>
+            <span><span className="click-dot" /> {t('Нажмите на слово, чтобы перевести и сохранить', 'Select a word to translate and save it')}</span>
           </div>
           <div className="segments">
             {visible.map((segment) => {
@@ -829,14 +917,14 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
                 </article>
               );
             })}
-            {!visible.length && <div className="empty-search">Ничего не найдено по запросу «{search}»</div>}
+            {!visible.length && <div className="empty-search">{t(`Ничего не найдено по запросу «${search}»`, `Nothing found for “${search}”`)}</div>}
           </div>
         </>
       ) : (
         <div className="empty-transcript">
           <div><FileText size={29} /></div>
-          <strong>Здесь появится текст</strong>
-          <p>После распознавания фразы синхронизируются с видео. Каждое слово станет интерактивным.</p>
+          <strong>{t('Здесь появится текст', 'The transcript will appear here')}</strong>
+          <p>{t('После распознавания фразы синхронизируются с видео. Каждое слово станет интерактивным.', 'After transcription, every line will be synchronized with the video and every word will become interactive.')}</p>
         </div>
       )}
     </section>
@@ -844,6 +932,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
 }
 
 function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, processing }) {
+  const { t } = useUiLanguage();
   const [query, setQuery] = useState('');
   const normalizedQuery = query.toLocaleLowerCase('sr');
   const glossary = (project.glossary || []).filter((item) => (
@@ -856,10 +945,10 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
     <aside className="glossary-panel">
       <div className="glossary-top">
         <div className="dictionary-icon"><BookOpen size={21} /></div>
-        <div><span>ЛИЧНЫЙ СЛОВАРЬ</span><h2>Читавук-речник <b>{project.glossary?.length || 0}</b></h2></div>
+        <div><span>{t('ЛИЧНЫЙ СЛОВАРЬ', 'PERSONAL DICTIONARY')}</span><h2>Читавук-речник <b>{project.glossary?.length || 0}</b></h2></div>
       </div>
       {(project.glossary?.length || 0) > 0 && (
-        <div className="glossary-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти слово…" /></div>
+        <div className="glossary-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('Найти слово…', 'Find a word…')} /></div>
       )}
       <div className="glossary-list">
         {glossary.map((item, index) => (
@@ -871,18 +960,18 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                 <button onClick={() => onSeek(item.time)}><Clock3 size={13} /> {formatClock(item.time)}</button>
               </div>
               {item.translationStatus === 'loading' && (
-                <div className="word-translation-status"><LoaderCircle size={13} className="spin" /> Подбираем русский и английский переводы…</div>
+                <div className="word-translation-status"><LoaderCircle size={13} className="spin" /> {t('Подбираем русский и английский переводы…', 'Finding Russian and English translations…')}</div>
               )}
               {item.translationStatus === 'error' && (
-                <div className="word-translation-status is-error">Перевод временно недоступен. Нажмите на слово ещё раз.</div>
+                <div className="word-translation-status is-error">{t('Перевод временно недоступен. Нажмите на слово ещё раз.', 'Translation is temporarily unavailable. Select the word again.')}</div>
               )}
               <label className="word-translation-field">
                 <span>РУССКИЙ</span>
                 <input
                   value={item.translationRu || item.translation || ''}
                   onChange={(event) => onChangeItem(item.id, { translationRu: event.target.value, translation: event.target.value })}
-                  placeholder="Русский перевод"
-                  aria-label={`Русский перевод слова ${item.word}`}
+                  placeholder={t('Русский перевод', 'Russian translation')}
+                  aria-label={t(`Русский перевод слова ${item.word}`, `Russian translation of ${item.word}`)}
                 />
               </label>
               <label className="word-translation-field">
@@ -891,31 +980,31 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                   value={item.translationEn || ''}
                   onChange={(event) => onChangeItem(item.id, { translationEn: event.target.value })}
                   placeholder="English translation"
-                  aria-label={`Английский перевод слова ${item.word}`}
+                  aria-label={t(`Английский перевод слова ${item.word}`, `English translation of ${item.word}`)}
                 />
               </label>
               <textarea
                 value={item.note || ''}
                 onChange={(event) => onChangeItem(item.id, { note: event.target.value })}
-                placeholder="Заметка или пример"
+                placeholder={t('Заметка или пример', 'Note or example')}
                 rows={1}
               />
             </div>
-            <button className="remove-word" onClick={() => onRemove(item.id)} aria-label={`Удалить ${item.word}`}><X size={15} /></button>
+            <button className="remove-word" onClick={() => onRemove(item.id)} aria-label={t(`Удалить ${item.word}`, `Remove ${item.word}`)}><X size={15} /></button>
           </article>
         ))}
         {!glossary.length && (
           <div className="empty-glossary">
             <div className="empty-book"><BookOpen size={27} /><Plus size={14} /></div>
-            <strong>{query ? 'Слово не найдено' : 'Словарь пока пуст'}</strong>
-            <p>{query ? 'Попробуйте другой запрос.' : 'Нажимайте на незнакомые слова в тексте — здесь появятся русский и английский переводы.'}</p>
+            <strong>{query ? t('Слово не найдено', 'Word not found') : t('Словарь пока пуст', 'The dictionary is empty')}</strong>
+            <p>{query ? t('Попробуйте другой запрос.', 'Try another search.') : t('Нажимайте на незнакомые слова в тексте — здесь появятся русский и английский переводы.', 'Select unfamiliar words in the transcript to see Russian and English translations here.')}</p>
           </div>
         )}
       </div>
       <div className="glossary-footer">
         <button className="burn-button" onClick={onBurn} disabled={!project.transcript?.length || processing === 'burn' || project.isDemo}>
           {processing === 'burn' ? <LoaderCircle size={18} className="spin" /> : <Download size={18} />}
-          <span><strong>{processing === 'burn' ? 'Собираем MP4…' : 'MP4 с субтитрами'}</strong><small>{project.isDemo ? 'недоступно в демо' : 'титры вшиты в видео'}</small></span>
+          <span><strong>{processing === 'burn' ? t('Собираем MP4…', 'Creating MP4…') : t('MP4 с субтитрами', 'MP4 with subtitles')}</strong><small>{project.isDemo ? t('недоступно в демо', 'unavailable in demo') : t('титры вшиты в видео', 'subtitles embedded in video')}</small></span>
         </button>
       </div>
     </aside>
@@ -923,6 +1012,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
 }
 
 function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onTranscribe, onBurn, onPublish, processing, notify, transcriptionError, onDismissError }) {
+  const { t } = useUiLanguage();
   const [currentTime, setCurrentTime] = useState(0);
   const [search, setSearch] = useState('');
   const videoRef = useRef(null);
@@ -1008,9 +1098,9 @@ function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onT
   return (
     <main className="workspace">
       <div className="project-bar">
-        <button onClick={onBack}><ArrowLeft size={17} /> К проектам</button>
-        <div className="project-title"><span className="status-dot" /><strong>{project.name}</strong><span>сохранено локально</span></div>
-        <div className="project-meta"><Gauge size={15} /><span>{project.transcript?.length ? `${project.transcript.length} фрагментов` : 'ожидает обработки'}</span></div>
+        <button onClick={onBack}><ArrowLeft size={17} /> {t('К проектам', 'Back to projects')}</button>
+        <div className="project-title"><span className="status-dot" /><strong>{project.name}</strong><span>{t('сохранено локально', 'saved locally')}</span></div>
+        <div className="project-meta"><Gauge size={15} /><span>{project.transcript?.length ? t(`${project.transcript.length} фрагментов`, `${project.transcript.length} segments`) : t('ожидает обработки', 'waiting to be processed')}</span></div>
       </div>
       <div className="workspace-grid">
         <div className="workspace-main">
@@ -1054,6 +1144,7 @@ function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onT
 }
 
 function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigate }) {
+  const { locale, t } = useUiLanguage();
   const [items, setItems] = useState([]);
   const [category, setCategory] = useState(() => new URLSearchParams(window.location.search).get('category') || 'все');
   const [currentPage, setCurrentPage] = useState(() => Math.max(1, Number.parseInt(new URLSearchParams(window.location.search).get('page') || '1', 10) || 1));
@@ -1164,15 +1255,15 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
 
   if (selected) {
     const pagePath = `/subtitles/${selected.slug || videoSlug}`;
-    const pageDescription = selected.description || `${selected.title} — видео с синхронными сербскими субтитрами и текстом реплик.`;
+    const pageDescription = selected.description || t(`${selected.title} — видео с синхронными сербскими субтитрами и текстом реплик.`, `${selected.title} — a video with synchronized Serbian subtitles and a full transcript.`);
     const shortTitle = selected.title.length > 58 ? `${selected.title.slice(0, 57).trim()}…` : selected.title;
     return (
       <main className="public-library public-viewer">
-        <PageMetadata title={`${shortTitle} — сербские субтитры`} description={pageDescription} path={pagePath} />
+        <PageMetadata title={t(`${shortTitle} — сербские субтитры`, `${shortTitle} — Serbian subtitles`)} description={pageDescription} path={pagePath} />
         <div className="library-heading">
-          <nav className="breadcrumbs" aria-label="Хлебные крошки"><a href="/" onClick={(event) => follow(event, '/')}>Главная</a><span>›</span><a href="/subtitles" onClick={(event) => follow(event, '/subtitles')}>Библиотека</a><span>›</span><strong>{selected.title}</strong></nav>
-          <a className="library-back" href="/subtitles" onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> Ко всем публикациям</a>
-          <span className="category-badge"><Tag size={13} /> {selected.category}</span>
+          <nav className="breadcrumbs" aria-label={t('Хлебные крошки', 'Breadcrumbs')}><a href="/" onClick={(event) => follow(event, '/')}>{t('Главная', 'Home')}</a><span>›</span><a href="/subtitles" onClick={(event) => follow(event, '/subtitles')}>{t('Библиотека', 'Library')}</a><span>›</span><strong>{selected.title}</strong></nav>
+          <a className="library-back" href="/subtitles" onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> {t('Ко всем публикациям', 'All publications')}</a>
+          <span className="category-badge"><Tag size={13} /> {locale === 'en' ? PUBLIC_CATEGORY_EN[selected.category] || selected.category : selected.category}</span>
           <h1>{selected.title}</h1>
           <p>{pageDescription}</p>
         </div>
@@ -1183,7 +1274,7 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
             </video>
           </div>
           <div className="public-transcript">
-            <div className="public-transcript-heading"><span>СЕРБСКИЕ СУБТИТРЫ</span><h2>Текст видео</h2></div>
+            <div className="public-transcript-heading"><span>{t('СЕРБСКИЕ СУБТИТРЫ', 'SERBIAN SUBTITLES')}</span><h2>{t('Текст видео', 'Video transcript')}</h2></div>
             <div className="public-segments">
               {(selected.segments || []).map((segment) => (
                 <button key={segment.id} className={isSubtitleActive(segment, currentTime) ? 'is-active' : ''} onClick={() => seek(subtitleTime(segment.start))}>
@@ -1200,35 +1291,35 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
   const visibleItems = items;
   return (
     <main className="public-library">
-      <PageMetadata title={`${category !== 'все' ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Видео с сербскими субтитрами — публичная библиотека'}${currentPage > 1 ? ` — страница ${currentPage}` : ''}`} description="Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик." path={libraryHref(currentPage, category)} />
+      <PageMetadata title={locale === 'en' ? `Videos with Serbian subtitles — public library${currentPage > 1 ? ` — page ${currentPage}` : ''}` : `${category !== 'все' ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Видео с сербскими субтитрами — публичная библиотека'}${currentPage > 1 ? ` — страница ${currentPage}` : ''}`} description={t('Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.', 'A public library of films, animation, blogs and learning videos with synchronized Serbian subtitles and full transcripts.')} path={libraryHref(currentPage, category)} />
       <PatternBand />
       <section className="library-intro">
         <div>
-          <span className="panel-eyebrow">АНОНИМНЫЕ ПУБЛИКАЦИИ</span>
-          <h1>Сербское видео с готовыми субтитрами</h1>
-          <p>Здесь собраны видео, которыми пользователи решили поделиться после распознавания речи. Имя автора не запрашивается и не публикуется, а категория помогает быстро найти фильм, мультфильм, блог или учебный материал.</p>
+          <span className="panel-eyebrow">{t('АНОНИМНЫЕ ПУБЛИКАЦИИ', 'ANONYMOUS PUBLICATIONS')}</span>
+          <h1>{t('Сербское видео с готовыми субтитрами', 'Videos with ready-made Serbian subtitles')}</h1>
+          <p>{t('Здесь собраны видео, которыми пользователи решили поделиться после распознавания речи. Имя автора не запрашивается и не публикуется, а категория помогает быстро найти фильм, мультфильм, блог или учебный материал.', 'These are videos users chose to share after transcription. Author names are not requested or published, and categories make films, animation, blogs and learning materials easy to find.')}</p>
         </div>
-        <img src="/assets/citavuk-guide.webp" alt="Читавук показывает публичную библиотеку" />
+        <img src="/assets/citavuk-guide.webp" alt={t('Читавук показывает публичную библиотеку', 'Čitavuk presents the public library')} />
       </section>
-      <nav className="category-filter" aria-label="Фильтр по категории">
-        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{item}</a>)}
+      <nav className="category-filter" aria-label={t('Фильтр по категории', 'Filter by category')}>
+        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{locale === 'en' ? PUBLIC_CATEGORY_EN[item] : item}</a>)}
       </nav>
-      {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>Читавук открывает библиотеку…</p></div>}
+      {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>{t('Читавук открывает библиотеку…', 'Čitavuk is opening the library…')}</p></div>}
       {!loading && error && <div className="library-state library-state--error"><Globe2 size={28} /><p>{error}</p></div>}
-      {!loading && !error && !configured && <div className="library-state"><Globe2 size={28} /><p>Публичное хранилище ещё не подключено. После добавления параметров Cloudflare R2 в Render здесь появятся анонимные публикации.</p></div>}
-      {!loading && !error && configured && visibleItems.length === 0 && <div className="library-state"><Film size={28} /><p>{category === 'все' ? 'Пока здесь нет видео. Первую публикацию можно создать из проекта с готовыми субтитрами.' : `В категории «${category}» пока нет видео.`}</p></div>}
+      {!loading && !error && !configured && <div className="library-state"><Globe2 size={28} /><p>{t('Публичное хранилище ещё не подключено.', 'Public storage is not connected yet.')}</p></div>}
+      {!loading && !error && configured && visibleItems.length === 0 && <div className="library-state"><Film size={28} /><p>{category === 'все' ? t('Пока здесь нет видео. Первую публикацию можно создать из проекта с готовыми субтитрами.', 'There are no videos yet. You can publish the first one from a project with completed subtitles.') : t(`В категории «${category}» пока нет видео.`, `There are no videos in “${PUBLIC_CATEGORY_EN[category] || category}” yet.`)}</p></div>}
       {!loading && !error && visibleItems.length > 0 && (
         <section className="publication-grid">
           {visibleItems.map((item) => (
             <a className="publication-card" href={`/subtitles/${item.slug}`} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
               <div className={`publication-cover ${item.thumbnailUrl ? 'publication-cover--image' : ''}`}>
-                {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={`Кадр из видео «${item.title}»`} loading="lazy" /> : <Film size={32} />}
-                <span>{item.category}</span>
+                {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t(`Кадр из видео «${item.title}»`, `Frame from “${item.title}”`)} loading="lazy" /> : <Film size={32} />}
+                <span>{locale === 'en' ? PUBLIC_CATEGORY_EN[item.category] || item.category : item.category}</span>
               </div>
               <div className="publication-copy">
                 <h2>{item.title}</h2>
-                <p>{item.description || 'Сербское видео с распознанными субтитрами.'}</p>
-                <small>{item.segmentsCount} {pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}, {formatClock(item.duration)}</small>
+                <p>{item.description || t('Сербское видео с распознанными субтитрами.', 'A video with recognized Serbian subtitles.')}</p>
+                <small>{locale === 'en' ? `${item.segmentsCount} segments` : `${item.segmentsCount} ${pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}`}, {formatClock(item.duration)}</small>
               </div>
               <ChevronRight size={19} />
             </a>
@@ -1236,15 +1327,15 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
         </section>
       )}
       {!loading && !error && totalItems > 0 && (
-        <nav className="pagination" aria-label="Страницы библиотеки">
-          <a className={currentPage <= 1 ? 'is-disabled' : ''} href={libraryHref(Math.max(1, currentPage - 1))} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>Назад</a>
-          <span>Страница {currentPage} из {totalPages}</span>
+        <nav className="pagination" aria-label={t('Страницы библиотеки', 'Library pages')}>
+          <a className={currentPage <= 1 ? 'is-disabled' : ''} href={libraryHref(Math.max(1, currentPage - 1))} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>{t('Назад', 'Previous')}</a>
+          <span>{t(`Страница ${currentPage} из ${totalPages}`, `Page ${currentPage} of ${totalPages}`)}</span>
           <div>
             {Array.from({ length: totalPages }, (_, index) => index + 1).slice(Math.max(0, currentPage - 3), Math.max(5, currentPage + 2)).map((page) => (
               <a key={page} className={page === currentPage ? 'is-active' : ''} href={libraryHref(page)} onClick={(event) => follow(event, libraryHref(page))}>{page}</a>
             ))}
           </div>
-          <a className={currentPage >= totalPages ? 'is-disabled' : ''} href={libraryHref(Math.min(totalPages, currentPage + 1))} onClick={(event) => currentPage < totalPages && follow(event, libraryHref(currentPage + 1))}>Дальше</a>
+          <a className={currentPage >= totalPages ? 'is-disabled' : ''} href={libraryHref(Math.min(totalPages, currentPage + 1))} onClick={(event) => currentPage < totalPages && follow(event, libraryHref(currentPage + 1))}>{t('Дальше', 'Next')}</a>
         </nav>
       )}
     </main>
@@ -1252,6 +1343,7 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
 }
 
 function PublishModal({ project, processing, onSubmit, onClose }) {
+  const { locale, t } = useUiLanguage();
   const [title, setTitle] = useState(project.name.replace(/\.[^.]+$/, ''));
   const [category, setCategory] = useState('фильм');
   const [description, setDescription] = useState('');
@@ -1263,29 +1355,29 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
         event.preventDefault();
         onSubmit({ title: title.trim(), category, description: description.trim(), rightsConfirmed });
       }}>
-        <button type="button" className="modal-close" onClick={onClose} aria-label="Закрыть публикацию"><X size={20} /></button>
+        <button type="button" className="modal-close" onClick={onClose} aria-label={t('Закрыть публикацию', 'Close publication form')}><X size={20} /></button>
         <div className="modal-icon"><Globe2 size={24} /></div>
-        <span className="modal-kicker">ПУБЛИЧНАЯ БИБЛИОТЕКА</span>
-        <h2>Опубликовать анонимно</h2>
-        <p>Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Личные настройки и данные словаря не передаются и не публикуются.</p>
-        <label>НАЗВАНИЕ
+        <span className="modal-kicker">{t('ПУБЛИЧНАЯ БИБЛИОТЕКА', 'PUBLIC LIBRARY')}</span>
+        <h2>{t('Опубликовать анонимно', 'Publish anonymously')}</h2>
+        <p>{t('Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Личные настройки и данные словаря не передаются и не публикуются.', 'The video and completed Serbian subtitles will become public. Personal settings and dictionary data are never uploaded or published.')}</p>
+        <label>{t('НАЗВАНИЕ', 'TITLE')}
           <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} required />
         </label>
-        <label>КАТЕГОРИЯ
+        <label>{t('КАТЕГОРИЯ', 'CATEGORY')}
           <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            {PUBLIC_CATEGORIES.slice(1).map((item) => <option key={item} value={item}>{item}</option>)}
+            {PUBLIC_CATEGORIES.slice(1).map((item) => <option key={item} value={item}>{locale === 'en' ? PUBLIC_CATEGORY_EN[item] : item}</option>)}
           </select>
         </label>
-        <label>ОПИСАНИЕ
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={600} rows={3} placeholder="Коротко расскажите, что находится в видео" />
+        <label>{t('ОПИСАНИЕ', 'DESCRIPTION')}
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={600} rows={3} placeholder={t('Коротко расскажите, что находится в видео', 'Briefly describe the video')} />
         </label>
         <label className="rights-confirmation">
           <input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} />
-          <span><ShieldCheck size={18} /> Я подтверждаю, что имею право публично разместить это видео и понимаю, что публикация будет доступна по всему интернету.</span>
+          <span><ShieldCheck size={18} /> {t('Я подтверждаю, что имею право публично разместить это видео и понимаю, что публикация будет доступна по всему интернету.', 'I confirm that I have the right to publish this video and understand that it will be publicly available online.')}</span>
         </label>
         <button className="primary-button publish-submit" disabled={processing === 'publish' || !rightsConfirmed || title.trim().length < 2}>
           {processing === 'publish' ? <LoaderCircle className="spin" size={18} /> : <Globe2 size={18} />}
-          {processing === 'publish' ? 'Загружаем публикацию…' : 'Опубликовать видео'}
+          {processing === 'publish' ? t('Загружаем публикацию…', 'Uploading…') : t('Опубликовать видео', 'Publish video')}
         </button>
       </form>
     </div>
@@ -1293,23 +1385,24 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
 }
 
 function SettingsModal({ value, onSave, onClose }) {
+  const { t } = useUiLanguage();
   const [key, setKey] = useState(value);
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <button className="modal-close" onClick={onClose} aria-label="Закрыть настройки"><X size={20} /></button>
+        <button className="modal-close" onClick={onClose} aria-label={t('Закрыть настройки', 'Close settings')}><X size={20} /></button>
         <div className="modal-icon"><KeyRound size={24} /></div>
-        <span className="modal-kicker">НЕОБЯЗАТЕЛЬНО</span>
-        <h2>Свой ключ Groq API</h2>
-        <p>По умолчанию сайт уже использует общий ключ Groq с сервера. Личный ключ нужен только если вы хотите пользоваться собственными лимитами.</p>
-        <p className="key-guide-copy">Чтобы подключить свой ключ, откройте Groq Console, нажмите Create API Key и вставьте сюда значение, которое начинается с gsk_. Ключ останется только в локальном хранилище этого браузера.</p>
-        <label>ЛИЧНЫЙ GROQ API KEY
-          <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Оставьте пустым для общего ключа" autoFocus />
+        <span className="modal-kicker">{t('НЕОБЯЗАТЕЛЬНО', 'OPTIONAL')}</span>
+        <h2>{t('Свой ключ Groq API', 'Your Groq API key')}</h2>
+        <p>{t('По умолчанию распознавание и перевод работают на общих серверных моделях Polza. Личный Groq-ключ нужен только для использования собственных лимитов распознавания.', 'By default, transcription and translation use the shared Polza models on the server. A personal Groq key is only needed if you want to use your own transcription limits.')}</p>
+        <p className="key-guide-copy">{t('Чтобы подключить свой ключ, откройте Groq Console, нажмите Create API Key и вставьте сюда значение, которое начинается с gsk_. Ключ останется только в локальном хранилище этого браузера.', 'To connect your key, open Groq Console, select Create API Key, and paste the value starting with gsk_. It will stay in this browser’s local storage.')}</p>
+        <label>{t('ЛИЧНЫЙ GROQ API KEY', 'PERSONAL GROQ API KEY')}
+          <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder={t('Оставьте пустым для общего сервера', 'Leave empty to use the shared server')} autoFocus />
         </label>
-        <div className="free-info"><Sparkles size={18} /><p>Если удалить значение из поля и сохранить настройки, сайт снова автоматически переключится на общий ключ.</p></div>
+        <div className="free-info"><Sparkles size={18} /><p>{t('Если удалить значение из поля и сохранить настройки, сайт снова автоматически переключится на общий сервер.', 'Clear the field and save to switch back to the shared server automatically.')}</p></div>
         <div className="modal-actions">
-          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Получить личный ключ <ChevronRight size={15} /></a>
-          <button className="primary-button" onClick={() => onSave(key.trim())}>{key.trim() ? 'Использовать свой ключ' : 'Использовать общий ключ'}</button>
+          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">{t('Получить личный ключ', 'Get a personal key')} <ChevronRight size={15} /></a>
+          <button className="primary-button" onClick={() => onSave(key.trim())}>{key.trim() ? t('Использовать свой ключ', 'Use my key') : t('Использовать общий сервер', 'Use shared server')}</button>
         </div>
       </section>
     </div>
@@ -1318,26 +1411,27 @@ function SettingsModal({ value, onSave, onClose }) {
 
 const WELCOME_STEPS = [
   {
-    title: 'Загрузите видео',
-    text: 'Перетащите видео в область загрузки, выберите файл на устройстве или вставьте ссылку на YouTube.',
+    title: ['Загрузите видео', 'Upload a video'],
+    text: ['Перетащите видео в область загрузки, выберите файл на устройстве или вставьте ссылку на YouTube.', 'Drop a video into the upload area, choose a file from your device, or paste a YouTube URL.'],
     image: '/assets/onboarding-upload.png',
-    alt: 'Загрузка видео на главной странице Читавука',
+    alt: ['Загрузка видео на главной странице Читавука', 'Video upload on the Čitavuk home page'],
   },
   {
-    title: 'Создайте субтитры',
-    text: 'Откройте загруженное видео и нажмите «Создать субтитры». Читавук распознает речь и подготовит сербский текст.',
+    title: ['Создайте субтитры', 'Create subtitles'],
+    text: ['Откройте загруженное видео и нажмите «Создать субтитры». Читавук распознает речь и подготовит сербский текст.', 'Open the uploaded video and select “Create subtitles”. Čitavuk will recognize the speech and prepare Serbian text.'],
     image: '/assets/onboarding-transcribe.png',
-    alt: 'Кнопка создания сербских субтитров в проекте',
+    alt: ['Кнопка создания сербских субтитров в проекте', 'Create Serbian subtitles button'],
   },
   {
-    title: 'Смотрите и сохраняйте',
-    text: 'Смотрите видео с субтитрами, нажимайте на незнакомые слова и сохраняйте результат в VTT, SRT или MP4.',
+    title: ['Смотрите и сохраняйте', 'Watch and save'],
+    text: ['Смотрите видео с субтитрами, нажимайте на незнакомые слова и сохраняйте результат в VTT, SRT или MP4.', 'Watch with subtitles, select unfamiliar words, and save the result as VTT, SRT or MP4.'],
     image: '/assets/onboarding-result.png',
-    alt: 'Готовые субтитры и личный словарь в Читавуке',
+    alt: ['Готовые субтитры и личный словарь в Читавуке', 'Completed subtitles and personal vocabulary in Čitavuk'],
   },
 ];
 
 function WelcomeModal({ onClose }) {
+  const { locale, t } = useUiLanguage();
   const [step, setStep] = useState(0);
   const current = WELCOME_STEPS[step];
   const isLast = step === WELCOME_STEPS.length - 1;
@@ -1345,34 +1439,34 @@ function WelcomeModal({ onClose }) {
   return (
     <div className="modal-backdrop welcome-backdrop" onMouseDown={onClose}>
       <section className="welcome-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <button className="modal-close" onClick={onClose} aria-label="Закрыть инструкцию"><X size={20} /></button>
+        <button className="modal-close" onClick={onClose} aria-label={t('Закрыть инструкцию', 'Close guide')}><X size={20} /></button>
         <div className="welcome-shot-wrap">
-          <img key={current.image} src={current.image} alt={current.alt} />
+          <img key={current.image} src={current.image} alt={current.alt[locale === 'en' ? 1 : 0]} />
           <span className="welcome-shot-counter">{step + 1} / {WELCOME_STEPS.length}</span>
         </div>
         <div className="welcome-content">
-          <span className="modal-kicker">КАК ЭТО РАБОТАЕТ</span>
-          <h2>{current.title}</h2>
-          <p>{current.text}</p>
-          <div className="welcome-step-nav" aria-label="Шаги инструкции">
+          <span className="modal-kicker">{t('КАК ЭТО РАБОТАЕТ', 'HOW IT WORKS')}</span>
+          <h2>{current.title[locale === 'en' ? 1 : 0]}</h2>
+          <p>{current.text[locale === 'en' ? 1 : 0]}</p>
+          <div className="welcome-step-nav" aria-label={t('Шаги инструкции', 'Guide steps')}>
             {WELCOME_STEPS.map((item, index) => (
               <button
-                key={item.title}
+                key={item.title[0]}
                 type="button"
                 className={index === step ? 'active' : ''}
                 onClick={() => setStep(index)}
-                aria-label={`Шаг ${index + 1}: ${item.title}`}
+                aria-label={t(`Шаг ${index + 1}: ${item.title[0]}`, `Step ${index + 1}: ${item.title[1]}`)}
                 aria-current={index === step ? 'step' : undefined}
               >
                 <span>{String(index + 1).padStart(2, '0')}</span>
-                {item.title}
+                {item.title[locale === 'en' ? 1 : 0]}
               </button>
             ))}
           </div>
           <div className="welcome-actions">
-            {step > 0 && <button className="secondary-button" onClick={() => setStep((value) => value - 1)}>Назад</button>}
+            {step > 0 && <button className="secondary-button" onClick={() => setStep((value) => value - 1)}>{t('Назад', 'Back')}</button>}
             <button className="primary-button" onClick={() => isLast ? onClose() : setStep((value) => value + 1)}>
-              {isLast ? 'Начать' : 'Далее'}
+              {isLast ? t('Начать', 'Start') : t('Далее', 'Next')}
             </button>
           </div>
         </div>
@@ -1381,21 +1475,22 @@ function WelcomeModal({ onClose }) {
   );
 }
 
-function remainingLabel(seconds) {
+function remainingLabel(seconds, locale = 'ru') {
   if (!Number.isFinite(seconds)) return null;
-  if (seconds < 60) return `осталось примерно ${Math.max(1, Math.round(seconds))} сек`;
+  if (seconds < 60) return locale === 'en' ? `about ${Math.max(1, Math.round(seconds))} sec left` : `осталось примерно ${Math.max(1, Math.round(seconds))} сек`;
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.round(seconds % 60);
-  return `осталось примерно ${minutes} мин ${remainder} сек`;
+  return locale === 'en' ? `about ${minutes} min ${remainder} sec left` : `осталось примерно ${minutes} мин ${remainder} сек`;
 }
 
 function ProcessingBanner({ kind, progress }) {
+  const { locale, t } = useUiLanguage();
   if (!kind) return null;
-  const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Готовим сербские субтитры';
-  const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : kind === 'youtube' ? 'Загружаем ролик на сервер и передаём его в браузер…' : 'Извлекаем звук и расставляем таймкоды…';
+  const title = kind === 'burn' ? t('Создаём видео с субтитрами', 'Creating a subtitled video') : kind === 'publish' ? t('Публикуем видео анонимно', 'Publishing anonymously') : kind === 'youtube' ? t('Скачиваем видео с YouTube', 'Downloading from YouTube') : t('Готовим сербские субтитры', 'Creating Serbian subtitles');
+  const copy = kind === 'burn' ? t('Это может занять несколько минут…', 'This may take a few minutes…') : kind === 'publish' ? t('Передаём видео и готовые субтитры в публичное хранилище…', 'Uploading the video and subtitles to public storage…') : kind === 'youtube' ? t('Загружаем ролик на сервер и передаём его в браузер…', 'Downloading the video on the server…') : t('Извлекаем звук и расставляем таймкоды…', 'Extracting audio and aligning timestamps…');
   if ((kind === 'transcribe' || kind === 'youtube' || kind === 'publish' || kind === 'burn') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
-    const remaining = remainingLabel(progress.etaSeconds);
+    const remaining = remainingLabel(progress.etaSeconds, locale);
     return (
       <div className="processing-banner processing-banner--progress" role="status" aria-live="polite">
         <div className="processing-progress-heading">
@@ -1405,7 +1500,7 @@ function ProcessingBanner({ kind, progress }) {
         <div className="processing-progress-track"><span style={{ width: `${percent}%` }} /></div>
         <div className="processing-progress-copy">
           <span>{progress.stage || copy}</span>
-          <small>{remaining || (percent >= 60 && percent < 99 ? 'Сервис отвечает дольше обычного, задача продолжает выполняться' : 'оцениваем оставшееся время')}</small>
+          <small>{remaining || (percent >= 60 && percent < 99 ? t('Сервис отвечает дольше обычного, задача продолжает выполняться', 'The service is taking longer than usual, but the job is still running') : t('оцениваем оставшееся время', 'estimating the remaining time'))}</small>
         </div>
       </div>
     );
@@ -1419,21 +1514,23 @@ function ProcessingBanner({ kind, progress }) {
 }
 
 function TelegramNotice({ onClose }) {
+  const { t } = useUiLanguage();
   return (
     <aside className="telegram-notice" role="status" aria-live="polite">
       <div className="telegram-notice-icon"><Send size={19} strokeWidth={1.8} /></div>
       <div className="telegram-notice-copy">
-        <strong>Читавук в Telegram</strong>
-        <p>Следите за обновлениями сайта и находите новые материалы для изучения сербского и хорватского.</p>
-        <a href="https://t.me/citavuk" target="_blank" rel="noreferrer">Открыть канал <ChevronRight size={14} /></a>
+        <strong>{t('Читавук в Telegram', 'Čitavuk on Telegram')}</strong>
+        <p>{t('Следите за обновлениями сайта и находите новые материалы для изучения сербского и хорватского.', 'Follow site updates and discover new materials for learning Serbian and Croatian.')}</p>
+        <a href="https://t.me/citavuk" target="_blank" rel="noreferrer">{t('Открыть канал', 'Open the channel')} <ChevronRight size={14} /></a>
       </div>
-      <button type="button" onClick={onClose} aria-label="Закрыть сообщение о Telegram-канале"><X size={16} /></button>
+      <button type="button" onClick={onClose} aria-label={t('Закрыть сообщение о Telegram-канале', 'Close Telegram notice')}><X size={16} /></button>
       <span className="telegram-notice-timer" aria-hidden="true" />
     </aside>
   );
 }
 
 export default function App() {
+  const [locale, setLocale] = useState(initialLocale);
   const [projects, setProjects] = useState(loadProjects);
   const [activeId, setActiveId] = useState(null);
   const [page, setPage] = useState(() => readBrowserRoute().page);
@@ -1451,7 +1548,19 @@ export default function App() {
   const [transcriptionError, setTranscriptionError] = useState('');
   const [toast, setToast] = useState('');
   const [telegramNoticeOpen, setTelegramNoticeOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => (
+    'Notification' in window && Notification.permission === 'granted'
+  ));
   const activeProject = projects.find((project) => project.id === activeId);
+
+  useEffect(() => {
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, locale);
+    document.documentElement.lang = locale;
+    const url = new URL(window.location.href);
+    if (locale === 'en') url.searchParams.set('lang', 'en');
+    else url.searchParams.delete('lang');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [locale]);
 
   useEffect(() => {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
@@ -1485,6 +1594,19 @@ export default function App() {
   }, [telegramNoticeOpen]);
 
   const notify = (message) => setToast(message);
+
+  const enableNotifications = async () => {
+    try {
+      const subscription = await ensurePushSubscription(true);
+      const enabled = Boolean(subscription);
+      setNotificationsEnabled(enabled);
+      notify(enabled
+        ? (locale === 'en' ? 'Notifications are enabled' : 'Уведомления включены')
+        : (locale === 'en' ? 'Notifications were not enabled' : 'Уведомления не включены'));
+    } catch {
+      notify(locale === 'en' ? 'The browser could not enable notifications' : 'Браузер не смог включить уведомления');
+    }
+  };
 
   const setCurrentMedia = (file) => {
     setVideoFile(file || null);
@@ -1606,7 +1728,46 @@ export default function App() {
     return { ...project, ...patch, updatedAt: Date.now() };
   }));
 
+  useEffect(() => {
+    let pending;
+    try {
+      pending = JSON.parse(localStorage.getItem(PENDING_TRANSCRIPTION_KEY) || 'null');
+    } catch {
+      pending = null;
+    }
+    if (!pending?.jobId || !pending?.projectId) return undefined;
+    if (!projects.some((project) => project.id === pending.projectId)) {
+      localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
+      return undefined;
+    }
+    let cancelled = false;
+    setProcessing('transcribe');
+    setTranscriptionProgress({ percent: 20, stage: locale === 'en' ? 'Restoring the background job' : 'Восстанавливаем фоновую задачу', etaSeconds: null });
+    waitForTranscriptionJob(pending.jobId, setTranscriptionProgress)
+      .then((payload) => {
+        if (cancelled) return;
+        const transcript = normalizeTranscription(payload);
+        if (!transcript.length) throw new Error(locale === 'en' ? 'No speech was found in the video.' : 'Речь в видео не найдена.');
+        updateProject({ transcript }, pending.projectId);
+        localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
+        notify(locale === 'en' ? `Ready: ${transcript.length} segments` : `Готово: ${transcript.length} фрагментов`);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (error.code || error.status === 404) localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
+        setTranscriptionError(error.message);
+        notify(error.message);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setProcessing(null);
+        setTranscriptionProgress(null);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const transcribe = async (fileOverride, projectId = activeId) => {
+    const pushSubscriptionPromise = ensurePushSubscription(true).catch(() => null);
     const target = projects.find((project) => project.id === projectId);
     let file = fileOverride instanceof Blob ? fileOverride : videoFile;
     if (!file && projectId) {
@@ -1631,15 +1792,29 @@ export default function App() {
     try {
       const form = new FormData();
       form.append('video', file, file.name || target?.name || 'video.mp4');
+      form.append('projectId', projectId || '');
+      form.append('locale', locale);
+      const pushSubscription = await pushSubscriptionPromise;
+      if (pushSubscription) {
+        form.append('pushSubscription', JSON.stringify(pushSubscription.toJSON()));
+        setNotificationsEnabled(true);
+      }
       const job = await startTranscriptionJob(form, apiKey, setTranscriptionProgress);
+      localStorage.setItem(PENDING_TRANSCRIPTION_KEY, JSON.stringify({
+        jobId: job.id,
+        projectId,
+        startedAt: Date.now(),
+      }));
       const payload = await waitForTranscriptionJob(job.id, setTranscriptionProgress);
       const transcript = normalizeTranscription(payload);
       if (!transcript.length) throw new Error('Речь не найдена. Проверьте громкость аудиодорожки.');
       setTranscriptionProgress({ percent: 100, stage: 'Субтитры готовы', etaSeconds: 0 });
       updateProject({ transcript }, projectId);
-      notify(`Готово: ${transcript.length} фрагментов`);
+      localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
+      notify(locale === 'en' ? `Ready: ${transcript.length} segments` : `Готово: ${transcript.length} фрагментов`);
       await wait(700);
     } catch (error) {
+      if (error.code || error.status === 404) localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
       if (error.status === 401 || error.code === 'MISSING_API_KEY') setSettingsOpen(true);
       setTranscriptionError(error.message);
       notify(error.message);
@@ -1757,7 +1932,9 @@ export default function App() {
     setSettingsOpen(false);
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
-    notify(key ? 'Используется ваш ключ Groq' : 'Используется общий ключ Groq');
+    notify(key
+      ? (locale === 'en' ? 'Your Groq key is active' : 'Используется ваш ключ Groq')
+      : (locale === 'en' ? 'The shared server is active' : 'Используется общий сервер'));
   };
 
   const closeWelcome = () => {
@@ -1778,8 +1955,17 @@ export default function App() {
   };
 
   return (
+    <LanguageContext.Provider value={{ locale, setLocale }}>
     <div className="app-shell">
-      <Header inProject={Boolean(activeProject)} inLibrary={page === 'library'} onHome={goHome} onLibrary={openLibrary} onSettings={() => setSettingsOpen(true)} />
+      <Header
+        inProject={Boolean(activeProject)}
+        inLibrary={page === 'library'}
+        onHome={goHome}
+        onLibrary={openLibrary}
+        onNotifications={enableNotifications}
+        notificationsEnabled={notificationsEnabled}
+        onSettings={() => setSettingsOpen(true)}
+      />
       {activeProject ? (
         <Workspace
           project={activeProject}
@@ -1811,10 +1997,10 @@ export default function App() {
       )}
       <footer>
         <span>ЧИТАВУК-РЕЧНИК, 2026</span>
-        <span>Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)</span>
-        <nav aria-label="Навигация в подвале"><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>Создать субтитры</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>Библиотека</a><a href="/sitemap.xml">Карта сайта</a></nav>
-        <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">По вопросам: @ivanlindgren</a>
-        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> Как это работает</button>
+        <span>{locale === 'en' ? 'Created by Denis Kornilov with Gpt Sol 5.6' : 'Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)'}</span>
+        <nav aria-label={locale === 'en' ? 'Footer navigation' : 'Навигация в подвале'}><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>{locale === 'en' ? 'Create subtitles' : 'Создать субтитры'}</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>{locale === 'en' ? 'Library' : 'Библиотека'}</a><a href="/sitemap.xml">{locale === 'en' ? 'Sitemap' : 'Карта сайта'}</a></nav>
+        <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">{locale === 'en' ? 'Questions: @ivanlindgren' : 'По вопросам: @ivanlindgren'}</a>
+        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> {locale === 'en' ? 'How it works' : 'Как это работает'}</button>
       </footer>
       {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
       {welcomeOpen && <WelcomeModal onClose={closeWelcome} />}
@@ -1823,5 +2009,6 @@ export default function App() {
       {telegramNoticeOpen && <TelegramNotice onClose={() => setTelegramNoticeOpen(false)} />}
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
+    </LanguageContext.Provider>
   );
 }

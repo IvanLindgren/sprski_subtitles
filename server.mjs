@@ -3,6 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import ffmpegPath from 'ffmpeg-static';
 import ytdlpExec from 'yt-dlp-exec';
+import webpush from 'web-push';
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -127,7 +128,15 @@ const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.
 const maxActiveSharedTranscriptions = Math.max(1, Math.min(maxActiveTranscriptions, Number.parseInt(process.env.MAX_ACTIVE_SHARED_TRANSCRIPTIONS || '2', 10) || 2));
 const polzaAiKey = String(process.env.POLZA_AI_KEY || '').trim();
 const polzaTranscriptionModel = String(process.env.POLZA_TRANSCRIPTION_MODEL || 'aiesa/transcribe').trim();
+const polzaTranslationModel = String(process.env.POLZA_TRANSLATION_MODEL || 'google/gemma-4-26b-a4b-it').trim();
 const transcriptionProviderPreference = String(process.env.TRANSCRIPTION_PROVIDER || 'polza').trim().toLowerCase();
+const vapidPublicKey = String(process.env.VAPID_PUBLIC_KEY || '').trim();
+const vapidPrivateKey = String(process.env.VAPID_PRIVATE_KEY || '').trim();
+const vapidSubject = String(process.env.VAPID_SUBJECT || 'mailto:ivanlindgren@yandex.ru').trim();
+const pushNotificationsConfigured = Boolean(vapidPublicKey && vapidPrivateKey);
+if (pushNotificationsConfigured) {
+  webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+}
 const subtitleDelaySeconds = Math.max(0, Math.min(3, Number(process.env.SUBTITLE_DELAY_SECONDS) || 0));
 const yandexTranslateConfigured = Boolean(
   process.env.YANDEX_TRANSLATE_API_KEY && process.env.YANDEX_FOLDER_ID,
@@ -157,6 +166,7 @@ function resolveTranscriptionCredentials(req) {
       provider: 'groq',
       apiKey: userGroqKey,
       groqApiKey: userGroqKey,
+      polzaApiKey: polzaAiKey,
       usesSharedKey: false,
     };
   }
@@ -166,6 +176,7 @@ function resolveTranscriptionCredentials(req) {
       provider: 'polza',
       apiKey: polzaAiKey,
       groqApiKey: sharedGroqKey,
+      polzaApiKey: polzaAiKey,
       usesSharedKey: true,
     };
   }
@@ -174,6 +185,7 @@ function resolveTranscriptionCredentials(req) {
       provider: 'groq',
       apiKey: sharedGroqKey,
       groqApiKey: sharedGroqKey,
+      polzaApiKey: polzaAiKey,
       usesSharedKey: true,
     };
   }
@@ -182,10 +194,11 @@ function resolveTranscriptionCredentials(req) {
       provider: 'polza',
       apiKey: polzaAiKey,
       groqApiKey: '',
+      polzaApiKey: polzaAiKey,
       usesSharedKey: true,
     };
   }
-  return { provider: '', apiKey: '', groqApiKey: '', usesSharedKey: false };
+  return { provider: '', apiKey: '', groqApiKey: '', polzaApiKey: '', usesSharedKey: false };
 }
 
 function resolveGroqApiKey(req) {
@@ -232,9 +245,18 @@ app.get('/api/health', (_req, res) => {
     sharedGroqKey: Boolean(String(process.env.GROQ_API_KEY || '').trim()),
     sharedPolzaKey: Boolean(polzaAiKey),
     polzaTranscriptionModel: polzaAiKey ? polzaTranscriptionModel : null,
+    polzaTranslationModel: polzaAiKey ? polzaTranslationModel : null,
+    pushNotifications: pushNotificationsConfigured,
     transcriptionConcurrency: maxActiveTranscriptions,
     publicLibrary: publicLibraryConfigured,
     yandexTranslate: yandexTranslateConfigured,
+  });
+});
+
+app.get('/api/notifications/public-key', (_req, res) => {
+  res.json({
+    enabled: pushNotificationsConfigured,
+    publicKey: pushNotificationsConfigured ? vapidPublicKey : null,
   });
 });
 
@@ -1508,108 +1530,125 @@ function groqRetryDelayMs(response) {
   return 30_000;
 }
 
-async function requestSerbianTranslationBatch(segments, apiKey, onRetry = () => {}, referenceTranscript = '') {
-  const models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+async function requestSerbianTranslationBatch(segments, credentials, onRetry = () => {}, referenceTranscript = '') {
+  const providers = [
+    ...(credentials.polzaApiKey ? [{
+      name: 'polza',
+      endpoint: 'https://polza.ai/api/v1/chat/completions',
+      apiKey: credentials.polzaApiKey,
+      models: [polzaTranslationModel],
+    }] : []),
+    ...(credentials.groqApiKey ? [{
+      name: 'groq',
+      endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+      apiKey: credentials.groqApiKey,
+      models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+    }] : []),
+  ];
   let lastError;
   for (let round = 0; round < 3; round += 1) {
     let retryDelayMs = 0;
-    for (const model of models) {
-      try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          signal: AbortSignal.timeout(120_000),
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0,
-            reasoning_effort: 'low',
-            max_completion_tokens: 4096,
-            response_format: {
-              type: 'json_schema',
-              json_schema: {
-                name: 'serbian_subtitles',
-                strict: true,
-                schema: {
-                  type: 'object',
-                  properties: {
-                    segments: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          id: { type: 'integer' },
-                          text: { type: 'string' },
+    for (const provider of providers) {
+      for (const model of provider.models) {
+        try {
+          const response = await fetch(provider.endpoint, {
+            method: 'POST',
+            signal: AbortSignal.timeout(180_000),
+            headers: {
+              Authorization: `Bearer ${provider.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              temperature: 0,
+              ...(provider.name === 'groq'
+                ? { reasoning_effort: 'low', max_completion_tokens: 4096 }
+                : { max_tokens: 4096 }),
+              response_format: {
+                type: 'json_schema',
+                json_schema: {
+                  name: 'serbian_subtitles',
+                  strict: true,
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      segments: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id: { type: 'integer' },
+                            text: { type: 'string' },
+                          },
+                          required: ['id', 'text'],
+                          additionalProperties: false,
                         },
-                        required: ['id', 'text'],
-                        additionalProperties: false,
                       },
                     },
+                    required: ['segments'],
+                    additionalProperties: false,
                   },
-                  required: ['segments'],
-                  additionalProperties: false,
                 },
               },
-            },
-            messages: [
-              {
-                role: 'system',
-                content: 'You are a professional Serbian subtitle editor. Translate every supplied segment into natural Serbian Latin (sr-Latn). The optional Aiesa reference transcript is authoritative for correcting recognition mistakes, names and wording, but it may omit some speech. Keep any timed speech missing from the reference. Preserve the supplied segment ids and timing structure. Return exactly one non-empty text for every input id. Never merge, split, omit, renumber or explain segments.',
-              },
-              {
-                role: 'user',
-                content: JSON.stringify({
-                  target_language: 'Serbian',
-                  target_script: 'Latin',
-                  segments,
-                  ...(referenceTranscript ? { aiesa_reference_transcript: referenceTranscript } : {}),
-                }),
-              },
-            ],
-          }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const error = new Error(payload?.error?.message || `Groq returned ${response.status} while translating subtitles.`);
-          error.status = response.status;
-          if (response.status === 429) error.retryDelayMs = groqRetryDelayMs(response);
-          throw error;
-        }
-        const parsed = JSON.parse(String(payload?.choices?.[0]?.message?.content || ''));
-        const translated = Array.isArray(parsed?.segments) ? parsed.segments : [];
-        const expectedIds = new Set(segments.map((segment) => segment.id));
-        const translations = new Map();
-        for (const segment of translated) {
-          const id = Number(segment?.id);
-          const text = cleanSubtitleText(segment?.text);
-          if (!Number.isInteger(id) || !expectedIds.has(id) || translations.has(id) || !text) {
-            throw new Error('Groq returned invalid Serbian subtitle segments.');
+              messages: [
+                {
+                  role: 'system',
+                  content: 'You are a professional Serbian subtitle editor. Translate every supplied segment into natural Serbian Latin (sr-Latn). The optional Aiesa reference transcript is authoritative for correcting recognition mistakes, names and wording, but it may omit some speech. Keep any timed speech missing from the reference. Preserve the supplied segment ids and timing structure. Return exactly one non-empty text for every input id. Never merge, split, omit, renumber or explain segments.',
+                },
+                {
+                  role: 'user',
+                  content: JSON.stringify({
+                    target_language: 'Serbian',
+                    target_script: 'Latin',
+                    segments,
+                    ...(referenceTranscript ? { aiesa_reference_transcript: referenceTranscript } : {}),
+                  }),
+                },
+              ],
+            }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const error = new Error(payload?.error?.message || `${provider.name} returned ${response.status} while translating subtitles.`);
+            error.status = response.status;
+            error.provider = provider.name;
+            if (response.status === 429) error.retryDelayMs = groqRetryDelayMs(response);
+            throw error;
           }
-          translations.set(id, text);
+          const parsed = JSON.parse(String(payload?.choices?.[0]?.message?.content || ''));
+          const translated = Array.isArray(parsed?.segments) ? parsed.segments : [];
+          const expectedIds = new Set(segments.map((segment) => segment.id));
+          const translations = new Map();
+          for (const segment of translated) {
+            const id = Number(segment?.id);
+            const text = cleanSubtitleText(segment?.text);
+            if (!Number.isInteger(id) || !expectedIds.has(id) || translations.has(id) || !text) {
+              throw new Error(`${provider.name} returned invalid Serbian subtitle segments.`);
+            }
+            translations.set(id, text);
+          }
+          if (translations.size !== expectedIds.size) {
+            throw new Error(`${provider.name} omitted one or more Serbian subtitle segments.`);
+          }
+          return { translations, model, provider: provider.name };
+        } catch (error) {
+          lastError = error;
+          if (error.status === 429) retryDelayMs = Math.max(retryDelayMs, error.retryDelayMs || 30_000);
         }
-        if (translations.size !== expectedIds.size) {
-          throw new Error('Groq omitted one or more Serbian subtitle segments.');
-        }
-        return { translations, model };
-      } catch (error) {
-        lastError = error;
-        if (error.status === 429) retryDelayMs = Math.max(retryDelayMs, error.retryDelayMs || 30_000);
       }
     }
     if (!retryDelayMs || round === 2) break;
     onRetry(retryDelayMs);
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
   }
-  const error = new Error(lastError?.message || 'Groq не смог перевести субтитры на сербский язык.');
+  const error = new Error(lastError?.message || 'Сервис перевода не смог подготовить сербские субтитры.');
   error.status = lastError?.status || 502;
-  error.provider = 'groq';
-  error.code = 'GROQ_TRANSLATION_ERROR';
+  error.provider = lastError?.provider || 'translation';
+  error.code = 'TRANSLATION_ERROR';
   throw error;
 }
 
-async function translatePayloadToSerbian(payload, apiKey, onUpdate = () => {}) {
+async function translatePayloadToSerbian(payload, credentials, onUpdate = () => {}) {
   const detectedLanguage = String(payload?.language || '').trim();
   const sourceLanguage = normalizeWhisperLanguage(detectedLanguage) || detectedLanguage.toLowerCase() || 'unknown';
   const recognitionReference = String(payload?.recognition_reference || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
@@ -1634,10 +1673,10 @@ async function translatePayloadToSerbian(payload, apiKey, onUpdate = () => {}) {
       stage: `Переводим субтитры на сербский (${index + 1}/${batches.length})`,
       etaSeconds: Math.max(8, (batches.length - index) * 15),
     });
-    const translatedBatch = await requestSerbianTranslationBatch(batches[index], apiKey, (delayMs) => {
+    const translatedBatch = await requestSerbianTranslationBatch(batches[index], credentials, (delayMs) => {
       onUpdate({
         progress: 91 + ((index / batches.length) * 8),
-        stage: 'Ждём обновления лимита Groq для перевода',
+        stage: 'Ждём доступности модели перевода',
         etaSeconds: Math.ceil(delayMs / 1000),
       });
     }, recognitionReference);
@@ -1719,6 +1758,29 @@ function updateTranscriptionJob(id, patch) {
       : nextProgress >= 60 ? 'дольше обычного' : 'уточняется';
     const level = patch.status === 'error' ? 'error' : 'log';
     console[level](`[transcribe:${id}] ${Math.round(nextProgress)}% · ${job.stage} · прошло ${secondsLabel(elapsed)} · осталось ${eta}`);
+  }
+}
+
+async function sendTranscriptionNotification(job, succeeded) {
+  if (!pushNotificationsConfigured || !job?.pushSubscription) return;
+  const english = job.locale === 'en';
+  const payload = succeeded
+    ? {
+      title: english ? 'Čitavuk: subtitles are ready' : 'Читавук: субтитры готовы',
+      body: english ? 'Open the site to watch the video with Serbian subtitles.' : 'Откройте сайт, чтобы посмотреть видео с сербскими субтитрами.',
+      url: '/',
+      tag: `transcription-${job.id}`,
+    }
+    : {
+      title: english ? 'Čitavuk: processing failed' : 'Читавук: не удалось обработать видео',
+      body: english ? 'Open the site to see the error and try again.' : 'Откройте сайт, чтобы увидеть причину и повторить попытку.',
+      url: '/',
+      tag: `transcription-${job.id}`,
+    };
+  try {
+    await webpush.sendNotification(job.pushSubscription, JSON.stringify(payload), { TTL: 60 * 60 });
+  } catch (error) {
+    console.warn(`[push:${job.id}] ${error.statusCode || ''} ${error.message}`.trim());
   }
 }
 
@@ -1895,14 +1957,15 @@ async function processVideoTranscription(sourcePath, credentials, onUpdate = () 
       )
       : payload;
 
-    if (!credentials.groqApiKey && !isSerbianLanguage(completePayload.language)) {
-      const error = new Error('Для перевода распознанной речи на сербский нужен GROQ_API_KEY на сервере или личный ключ Groq.');
+    const canTranslate = Boolean(credentials.polzaApiKey || credentials.groqApiKey);
+    if (!canTranslate && !isSerbianLanguage(completePayload.language)) {
+      const error = new Error('На сервере не настроена модель перевода субтитров на сербский язык.');
       error.status = 503;
       error.code = 'MISSING_TRANSLATION_API_KEY';
       throw error;
     }
-    const serbianPayload = credentials.groqApiKey
-      ? await translatePayloadToSerbian(completePayload, credentials.groqApiKey, onUpdate)
+    const serbianPayload = canTranslate
+      ? await translatePayloadToSerbian(completePayload, credentials, onUpdate)
       : completePayload;
     onUpdate({ progress: 99, stage: 'Сохраняем фрагменты и таймкоды', etaSeconds: 1 });
     return serbianPayload;
@@ -1926,6 +1989,7 @@ async function runTranscriptionJob(
       etaSeconds: 0,
       result,
     });
+    await sendTranscriptionNotification(transcriptionJobs.get(id), true);
   } catch (error) {
     updateTranscriptionJob(id, {
       status: 'error',
@@ -1936,6 +2000,7 @@ async function runTranscriptionJob(
       statusCode: Number.isInteger(error.status) ? error.status : 500,
     });
     console.error(`[transcribe:${id}]`, error);
+    await sendTranscriptionNotification(transcriptionJobs.get(id), false);
   } finally {
     await rm(sourcePath, { force: true }).catch(() => {});
     releaseAdmission();
@@ -2353,6 +2418,19 @@ app.post(
     }
 
     req.transcriptionAdmission.transferred = true;
+    const job = transcriptionJobs.get(id);
+    if (job) {
+      job.projectId = String(req.body?.projectId || '').slice(0, 100);
+      job.locale = req.body?.locale === 'en' ? 'en' : 'ru';
+      try {
+        const subscription = JSON.parse(String(req.body?.pushSubscription || 'null'));
+        if (subscription?.endpoint && subscription?.keys?.p256dh && subscription?.keys?.auth) {
+          job.pushSubscription = subscription;
+        }
+      } catch {
+        job.pushSubscription = null;
+      }
+    }
     updateTranscriptionJob(id, { status: 'processing', progress: 20, stage: 'Видео загружено на сервер', etaSeconds: null });
     res.status(202).json({ id });
     setImmediate(() => runTranscriptionJob(
