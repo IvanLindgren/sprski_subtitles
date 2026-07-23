@@ -115,6 +115,7 @@ const objectStorageClient = publicLibraryConfigured ? new S3Client({
 const publicationAttempts = new Map();
 const publicUploadSessions = new Map();
 const transcriptionJobs = new Map();
+const burnJobs = new Map();
 const transcriptionAttempts = new Map();
 const sharedTranscriptionAttempts = new Map();
 const translationAttempts = new Map();
@@ -2260,15 +2261,20 @@ app.post('/api/youtube/download', async (req, res) => {
     try {
       await ytdlp(url, withYoutubeAuth({
         output: outputTemplate,
-        // Prefer H.264/AAC explicitly: YouTube's mp4 streams are sometimes AV1, which not every
-        // browser can play natively in a <video> element. H.264 is universally supported.
-        format: 'bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/best[vcodec^=avc1][height<=720]/best[ext=mp4][height<=720]/best[height<=720]/best',
+        // Prefer a ready progressive MP4 when YouTube exposes one. It avoids downloading and
+        // merging two separate streams on a small one-core server.
+        format: 'best[ext=mp4][vcodec^=avc1][height<=720][acodec!=none]/bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/best[vcodec^=avc1][height<=720]/best[height<=720]/best',
         mergeOutputFormat: 'mp4',
         ffmpegLocation: ffmpegPath,
         noPlaylist: true,
         verbose: true,
         noCheckCertificates: true,
-      }), { timeout: 45 * 60 * 1000 });
+        concurrentFragments: 4,
+        socketTimeout: 20,
+        retries: 3,
+        fragmentRetries: 3,
+        abortOnUnavailableFragment: true,
+      }), { timeout: 15 * 60 * 1000 });
     } catch (error) {
       throw youtubeFailure(error, 'download', requestId);
     }
@@ -2394,6 +2400,144 @@ app.post('/api/transcribe', admitTranscription, upload.single('video'), async (r
     if (req.transcriptionAdmission.transferred) req.transcriptionAdmission.release();
   }
 });
+
+function publicBurnJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    progress: Math.round(job.progress),
+    stage: job.stage,
+    etaSeconds: Number.isFinite(job.etaSeconds) ? Math.max(0, Math.round(job.etaSeconds)) : null,
+    error: job.status === 'error' ? job.error : undefined,
+    downloadUrl: job.status === 'done' ? `/api/burn/jobs/${job.id}/file` : undefined,
+  };
+}
+
+async function runBurnJob(id) {
+  const job = burnJobs.get(id);
+  if (!job) return;
+  job.status = 'processing';
+  job.stage = 'Подготавливаем видео';
+  job.progress = 1;
+  job.updatedAt = Date.now();
+
+  try {
+    job.tempDir = await mkdtemp(path.join(os.tmpdir(), 'recnik-render-'));
+    job.outputPath = path.join(job.tempDir, 'video-sa-titlovima.mp4');
+    const safeSubtitlePath = job.subtitlePath
+      .replaceAll('\\', '/')
+      .replace(':', '\\:')
+      .replaceAll("'", "\\'");
+    const renderStartedAt = Date.now();
+
+    await runFfmpeg([
+      '-y',
+      '-i', job.videoPath,
+      '-vf', `subtitles='${safeSubtitlePath}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00130E0C,BorderStyle=1,Outline=2,Shadow=0,MarginV=28'`,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '96k',
+      '-movflags', '+faststart',
+      '-progress', 'pipe:1',
+      '-nostats',
+      job.outputPath,
+    ], {
+      onProgress: ({ fraction }) => {
+        const elapsedSeconds = Math.max(1, (Date.now() - renderStartedAt) / 1000);
+        job.progress = Math.min(99, 2 + (fraction * 97));
+        job.stage = `Встраиваем субтитры в видео — ${Math.round(fraction * 100)}%`;
+        job.etaSeconds = fraction > 0.01 ? (elapsedSeconds / fraction) * (1 - fraction) : null;
+        job.updatedAt = Date.now();
+      },
+    });
+
+    const stats = await stat(job.outputPath);
+    job.size = stats.size;
+    job.status = 'done';
+    job.progress = 100;
+    job.stage = 'MP4 готов к скачиванию';
+    job.etaSeconds = 0;
+    job.updatedAt = Date.now();
+    console.log(`[burn:${id}] Готово за ${Math.round((Date.now() - job.startedAt) / 1000)} с, ${Math.round(stats.size / 1024 / 1024)} МБ`);
+  } catch (error) {
+    console.error(`[burn:${id}] Ошибка создания MP4:`, error);
+    job.status = 'error';
+    job.error = 'Не удалось создать MP4 с субтитрами. Попробуйте видео покороче или в формате MP4.';
+    job.stage = 'Создание MP4 остановлено';
+    job.updatedAt = Date.now();
+    if (job.tempDir) await rm(job.tempDir, { recursive: true, force: true }).catch(() => {});
+  } finally {
+    await rm(job.videoPath, { force: true }).catch(() => {});
+    await rm(job.subtitlePath, { force: true }).catch(() => {});
+  }
+}
+
+app.post(
+  '/api/burn/jobs',
+  upload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'subtitles', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    const videoPath = req.files?.video?.[0]?.path;
+    const subtitlePath = req.files?.subtitles?.[0]?.path;
+    if (!videoPath || !subtitlePath) {
+      if (videoPath) await rm(videoPath, { force: true }).catch(() => {});
+      if (subtitlePath) await rm(subtitlePath, { force: true }).catch(() => {});
+      return res.status(400).json({ error: 'Нужны видео и файл с субтитрами.' });
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+    burnJobs.set(id, {
+      id,
+      status: 'queued',
+      progress: 0,
+      stage: 'Видео загружено, запускаем обработку',
+      etaSeconds: null,
+      startedAt: now,
+      updatedAt: now,
+      videoPath,
+      subtitlePath,
+      tempDir: null,
+      outputPath: null,
+      error: null,
+    });
+    res.status(202).json({ id });
+    setImmediate(() => runBurnJob(id));
+  },
+);
+
+app.get('/api/burn/jobs/:id', (req, res) => {
+  const job = burnJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Задача создания MP4 не найдена или уже удалена.' });
+  return res.json(publicBurnJob(job));
+});
+
+app.get('/api/burn/jobs/:id/file', (req, res) => {
+  const job = burnJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Готовый MP4 уже удалён с сервера.' });
+  if (job.status !== 'done' || !job.outputPath) return res.status(409).json({ error: 'MP4 ещё не готов.' });
+  return res.download(job.outputPath, 'video-sa-srpskim-titlovima.mp4');
+});
+
+const burnCleanupTimer = setInterval(async () => {
+  const completedExpiry = Date.now() - 30 * 60 * 1000;
+  const abandonedExpiry = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, job] of burnJobs) {
+    const expired = (job.status === 'done' || job.status === 'error')
+      ? job.updatedAt < completedExpiry
+      : job.startedAt < abandonedExpiry;
+    if (!expired) continue;
+    if (job.tempDir) await rm(job.tempDir, { recursive: true, force: true }).catch(() => {});
+    await rm(job.videoPath, { force: true }).catch(() => {});
+    await rm(job.subtitlePath, { force: true }).catch(() => {});
+    burnJobs.delete(id);
+  }
+}, 5 * 60 * 1000);
+burnCleanupTimer.unref?.();
 
 app.post(
   '/api/burn',

@@ -278,6 +278,90 @@ function downloadYoutubeVideo(url, onProgress) {
   });
 }
 
+function startBurnJob(form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', apiUrl('/api/burn/jobs'));
+    request.responseType = 'json';
+    request.timeout = 30 * 60 * 1000;
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const fraction = event.loaded / event.total;
+      onProgress({
+        percent: Math.max(1, Math.round(fraction * 15)),
+        stage: 'Передаём видео на сервер',
+        etaSeconds: null,
+      });
+    };
+    request.onload = () => {
+      const payload = request.response || {};
+      if (request.status >= 200 && request.status < 300 && payload.id) return resolve(payload);
+      const error = new Error(payload.error || `Сервер вернул ошибку ${request.status}.`);
+      error.status = request.status;
+      return reject(error);
+    };
+    request.onerror = () => reject(new Error('Соединение с сервером прервалось во время загрузки видео.'));
+    request.ontimeout = () => reject(new Error('Загрузка видео на сервер заняла слишком много времени.'));
+    request.send(form);
+  });
+}
+
+async function waitForBurnJob(id, onProgress) {
+  const deadline = Date.now() + 2 * 60 * 60 * 1000;
+  let failedPolls = 0;
+  while (Date.now() < deadline) {
+    await wait(1000);
+    try {
+      const response = await fetch(apiUrl(`/api/burn/jobs/${encodeURIComponent(id)}`), { cache: 'no-store' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Сервер вернул ошибку ${response.status}.`);
+      failedPolls = 0;
+      onProgress({
+        percent: 15 + (Math.max(0, Math.min(100, Number(payload.progress) || 0)) * 0.77),
+        stage: payload.stage || 'Встраиваем субтитры в видео',
+        etaSeconds: payload.etaSeconds,
+      });
+      if (payload.status === 'done') return payload;
+      if (payload.status === 'error') throw new Error(payload.error || 'Не удалось создать MP4 с субтитрами.');
+    } catch (error) {
+      failedPolls += 1;
+      if (failedPolls >= 5) throw error;
+    }
+  }
+  throw new Error('Создание MP4 заняло больше двух часов и было остановлено.');
+}
+
+function downloadBurnedVideo(id, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('GET', apiUrl(`/api/burn/jobs/${encodeURIComponent(id)}/file`));
+    request.responseType = 'blob';
+    request.timeout = 60 * 60 * 1000;
+    request.onprogress = (event) => {
+      const fraction = event.lengthComputable ? event.loaded / event.total : 0;
+      onProgress({
+        percent: event.lengthComputable ? 92 + (fraction * 8) : 94,
+        stage: 'Скачиваем готовый MP4',
+        etaSeconds: null,
+      });
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) return resolve(request.response);
+      const reader = new FileReader();
+      reader.onload = () => {
+        let payload = {};
+        try { payload = JSON.parse(reader.result || '{}'); } catch { payload = {}; }
+        reject(new Error(payload.error || `Сервер вернул ошибку ${request.status}.`));
+      };
+      reader.onerror = () => reject(new Error(`Сервер вернул ошибку ${request.status}.`));
+      reader.readAsText(request.response);
+    };
+    request.onerror = () => reject(new Error('Соединение прервалось при скачивании готового MP4.'));
+    request.ontimeout = () => reject(new Error('Скачивание готового MP4 заняло слишком много времени.'));
+    request.send();
+  });
+}
+
 async function waitForTranscriptionJob(id, onProgress) {
   const deadline = Date.now() + 30 * 60 * 1000;
   let failedPolls = 0;
@@ -1309,7 +1393,7 @@ function ProcessingBanner({ kind, progress }) {
   if (!kind) return null;
   const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Готовим сербские субтитры';
   const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : kind === 'youtube' ? 'Загружаем ролик на сервер и передаём его в браузер…' : 'Извлекаем звук и расставляем таймкоды…';
-  if ((kind === 'transcribe' || kind === 'youtube' || kind === 'publish') && progress) {
+  if ((kind === 'transcribe' || kind === 'youtube' || kind === 'publish' || kind === 'burn') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
     const remaining = remainingLabel(progress.etaSeconds);
     return (
@@ -1601,16 +1685,14 @@ export default function App() {
     if (!file) return notify('Исходное видео не найдено');
 
     setProcessing('burn');
+    setTranscriptionProgress({ percent: 0, stage: 'Подготавливаем видео к загрузке', etaSeconds: null });
     try {
       const form = new FormData();
       form.append('video', file, file.name);
       form.append('subtitles', new Blob([makeSrt(activeProject.transcript)], { type: 'application/x-subrip' }), 'subtitles.srt');
-      const response = await fetch(apiUrl('/api/burn'), { method: 'POST', body: form });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || 'Не удалось собрать MP4');
-      }
-      const blob = await response.blob();
+      const job = await startBurnJob(form, setTranscriptionProgress);
+      await waitForBurnJob(job.id, setTranscriptionProgress);
+      const blob = await downloadBurnedVideo(job.id, setTranscriptionProgress);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -1622,6 +1704,7 @@ export default function App() {
       notify(error.message);
     } finally {
       setProcessing(null);
+      setTranscriptionProgress(null);
     }
   };
 
