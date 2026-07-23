@@ -8,6 +8,7 @@
     "build": "node scripts/install-yt-dlp.mjs && node scripts/install-youtube-pot.mjs && vite build",
     "install:yt-dlp": "node scripts/install-yt-dlp.mjs",
     "install:youtube-tools": "node scripts/install-yt-dlp.mjs && node scripts/install-youtube-pot.mjs",
+    "indexnow": "node scripts/submit-indexnow.mjs",
     "preview": "vite preview",
     "server": "node server.mjs",
     "start": "node server.mjs"

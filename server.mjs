@@ -3,8 +3,18 @@ import express from 'express';
 import multer from 'multer';
 import ffmpegPath from 'ffmpeg-static';
 import ytdlpExec from 'yt-dlp-exec';
-import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+  UploadPartCommand,
+} from '@aws-sdk/client-s3';
 import { Upload as S3Upload } from '@aws-sdk/lib-storage';
+import { notifyIndexNow } from './indexnow.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
@@ -23,6 +33,9 @@ const canonicalAliases = new Set([
   'serbiansubtitles.ru',
   'www.serbiansubtitles.ru',
 ]);
+const maxVideoBytes = 2 * 1024 * 1024 * 1024;
+const publicUploadChunkBytes = 8 * 1024 * 1024;
+const publicUploadTtlMs = 6 * 60 * 60 * 1000;
 const managedYtDlpPath = process.env.YOUTUBE_DL_PATH
   || path.join(process.cwd(), '.tools', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const managedYtDlpAvailable = existsSync(managedYtDlpPath);
@@ -86,6 +99,7 @@ const objectStorageClient = publicLibraryConfigured ? new S3Client({
   },
 }) : null;
 const publicationAttempts = new Map();
+const publicUploadSessions = new Map();
 const transcriptionJobs = new Map();
 const transcriptionAttempts = new Map();
 const sharedTranscriptionAttempts = new Map();
@@ -165,7 +179,7 @@ function resolveGroqApiKey(req) {
 
 const upload = multer({
   dest: os.tmpdir(),
-  limits: { fileSize: 500 * 1024 * 1024, fieldSize: 5 * 1024 * 1024, fields: 10 },
+  limits: { fileSize: maxVideoBytes, fieldSize: 5 * 1024 * 1024, fields: 10 },
 });
 
 app.use((req, res, next) => {
@@ -182,14 +196,14 @@ app.use((req, res, next) => {
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Groq-Api-Key');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,X-Video-Title');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 });
-app.use(express.json());
+app.use(express.json({ limit: '6mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -521,10 +535,14 @@ function publishedVideoType(filename) {
 
 function normalizePublishedSegments(value) {
   let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return [];
+  if (Array.isArray(value)) {
+    parsed = value;
+  } else {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return [];
+    }
   }
   if (!Array.isArray(parsed)) return [];
   return parsed.slice(0, 5000).map((segment, index) => ({
@@ -605,6 +623,7 @@ async function createPublicThumbnail(item) {
       CacheControl: 'no-cache',
     }));
     console.log(`[public-library] Создана обложка для «${item.title}»`);
+    return updatedMetadata;
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -676,6 +695,233 @@ function publicationRateLimited(ip) {
   publicationAttempts.set(ip, recent);
   return false;
 }
+
+function announcePublicPage(metadata) {
+  notifyIndexNow([
+    metadata.pageUrl,
+    `https://${canonicalHost}/subtitles`,
+    `https://${canonicalHost}/sitemap.xml`,
+  ]).catch((error) => console.warn(`[indexnow] Не удалось отправить новую публикацию: ${error.message}`));
+}
+
+async function savePublicMetadata(metadata) {
+  await objectStorageClient.send(new PutObjectCommand({
+    Bucket: objectStorage.bucket,
+    Key: `library/${metadata.id}.json`,
+    Body: JSON.stringify(metadata),
+    ContentType: 'application/json; charset=utf-8',
+    CacheControl: 'no-cache',
+  }));
+}
+
+async function abortPublicUpload(session) {
+  if (!session?.uploadId) return;
+  await objectStorageClient.send(new AbortMultipartUploadCommand({
+    Bucket: objectStorage.bucket,
+    Key: session.videoKey,
+    UploadId: session.uploadId,
+  })).catch((error) => console.warn(`[public-upload] Не удалось отменить ${session.id}: ${error.message}`));
+}
+
+function getPublicUploadSession(req) {
+  const session = publicUploadSessions.get(req.params.sessionId);
+  if (!session) return null;
+  const requestIp = req.ip || req.socket.remoteAddress || 'unknown';
+  if (session.ip !== requestIp || session.expiresAt < Date.now()) return null;
+  return session;
+}
+
+app.post('/api/public/uploads', async (req, res) => {
+  if (!publicLibraryConfigured) return res.status(503).json({ error: 'Публичная библиотека ещё не подключена.' });
+  const requestIp = req.ip || req.socket.remoteAddress || 'unknown';
+  const title = String(req.body.title || '').trim().slice(0, 100);
+  const category = String(req.body.category || '').trim().toLocaleLowerCase('ru');
+  const description = String(req.body.description || '').trim().slice(0, 600);
+  const originalFilename = String(req.body.filename || '').trim().slice(0, 255);
+  const size = Number(req.body.size);
+  const segments = normalizePublishedSegments(req.body.transcript);
+  const videoType = publishedVideoType(originalFilename);
+
+  if (req.body.rightsConfirmed !== true) return res.status(400).json({ error: 'Подтвердите право на публичное размещение видео.' });
+  if (title.length < 2) return res.status(400).json({ error: 'Укажите название длиной не менее двух символов.' });
+  if (!publicCategories.has(category)) return res.status(400).json({ error: 'Выберите доступную категорию видео.' });
+  if (!segments.length) return res.status(400).json({ error: 'Сначала распознайте субтитры, затем публикуйте видео.' });
+  if (!videoType) return res.status(400).json({ error: 'Для публикации поддерживаются MP4, MOV, WEBM, MKV, AVI и M4V.' });
+  if (!Number.isSafeInteger(size) || size <= 0 || size > maxVideoBytes) {
+    return res.status(413).json({ error: 'Размер публикуемого видео должен быть не больше 2 ГБ.' });
+  }
+  if (publicationRateLimited(requestIp)) {
+    return res.status(429).json({ error: 'С этого адреса уже опубликовано три видео за последний час. Попробуйте позже.' });
+  }
+
+  let session;
+  try {
+    const id = randomUUID();
+    const slug = await createUniquePublicSlug(title);
+    const filename = safeFilename(originalFilename);
+    const videoKey = `videos/${id}/${filename}`;
+    const subtitleKey = `subtitles/${id}.vtt`;
+    const multipart = await objectStorageClient.send(new CreateMultipartUploadCommand({
+      Bucket: objectStorage.bucket,
+      Key: videoKey,
+      ContentType: videoType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    }));
+    if (!multipart.UploadId) throw new Error('Хранилище не вернуло идентификатор загрузки.');
+
+    const sessionId = randomUUID();
+    session = {
+      sessionId,
+      id,
+      slug,
+      title,
+      category,
+      description,
+      size,
+      segments,
+      videoType,
+      videoKey,
+      subtitleKey,
+      uploadId: multipart.UploadId,
+      totalParts: Math.ceil(size / publicUploadChunkBytes),
+      parts: new Map(),
+      ip: requestIp,
+      expiresAt: Date.now() + publicUploadTtlMs,
+      completing: false,
+    };
+    publicUploadSessions.set(sessionId, session);
+    console.log(`[public-upload] Начата загрузка ${id}: ${session.totalParts} частей, ${(size / 1024 / 1024).toFixed(1)} МБ`);
+    return res.status(201).json({
+      sessionId,
+      chunkSize: publicUploadChunkBytes,
+      totalParts: session.totalParts,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    });
+  } catch (error) {
+    if (session) await abortPublicUpload(session);
+    console.error('Не удалось начать публикацию:', error);
+    return res.status(502).json({ error: error.message || 'Не удалось начать загрузку видео в хранилище.' });
+  }
+});
+
+app.put(
+  '/api/public/uploads/:sessionId/parts/:partNumber',
+  express.raw({ type: 'application/octet-stream', limit: `${publicUploadChunkBytes + 1024}b` }),
+  async (req, res) => {
+    const session = getPublicUploadSession(req);
+    if (!session) return res.status(404).json({ error: 'Сеанс загрузки не найден или уже завершён.' });
+    if (session.completing) return res.status(409).json({ error: 'Публикация уже завершается.' });
+    const partNumber = Number.parseInt(req.params.partNumber, 10);
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > session.totalParts) {
+      return res.status(400).json({ error: 'Некорректный номер части видео.' });
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'Получена пустая часть видео.' });
+    const expectedLength = partNumber === session.totalParts
+      ? session.size - ((session.totalParts - 1) * publicUploadChunkBytes)
+      : publicUploadChunkBytes;
+    if (req.body.length !== expectedLength) {
+      return res.status(400).json({ error: `Неверный размер части ${partNumber}. Ожидалось ${expectedLength} байт.` });
+    }
+
+    try {
+      const uploaded = await objectStorageClient.send(new UploadPartCommand({
+        Bucket: objectStorage.bucket,
+        Key: session.videoKey,
+        UploadId: session.uploadId,
+        PartNumber: partNumber,
+        Body: req.body,
+        ContentLength: req.body.length,
+      }));
+      if (!uploaded.ETag) throw new Error('Хранилище не подтвердило загруженную часть.');
+      session.parts.set(partNumber, { ETag: uploaded.ETag, PartNumber: partNumber });
+      session.expiresAt = Date.now() + publicUploadTtlMs;
+      console.log(`[public-upload] ${session.id}: часть ${partNumber}/${session.totalParts}`);
+      return res.json({ partNumber, uploadedParts: session.parts.size, totalParts: session.totalParts });
+    } catch (error) {
+      console.error(`[public-upload] Ошибка части ${partNumber} для ${session.id}:`, error);
+      return res.status(502).json({ error: 'Не удалось сохранить часть видео. Браузер повторит попытку.' });
+    }
+  },
+);
+
+app.post('/api/public/uploads/:sessionId/complete', async (req, res) => {
+  const session = getPublicUploadSession(req);
+  if (!session) return res.status(404).json({ error: 'Сеанс загрузки не найден или уже завершён.' });
+  if (session.completing) return res.status(409).json({ error: 'Публикация уже завершается.' });
+  if (session.parts.size !== session.totalParts) {
+    return res.status(409).json({ error: `Загружено ${session.parts.size} из ${session.totalParts} частей видео.` });
+  }
+  session.completing = true;
+
+  try {
+    await objectStorageClient.send(new CompleteMultipartUploadCommand({
+      Bucket: objectStorage.bucket,
+      Key: session.videoKey,
+      UploadId: session.uploadId,
+      MultipartUpload: {
+        Parts: [...session.parts.values()].sort((left, right) => left.PartNumber - right.PartNumber),
+      },
+    }));
+
+    await objectStorageClient.send(new PutObjectCommand({
+      Bucket: objectStorage.bucket,
+      Key: session.subtitleKey,
+      Body: makePublicVtt(session.segments),
+      ContentType: 'text/vtt; charset=utf-8',
+      CacheControl: 'public, max-age=31536000, immutable',
+    }));
+
+    let metadata = {
+      id: session.id,
+      slug: session.slug,
+      pageUrl: `https://${canonicalHost}/subtitles/${encodeURIComponent(session.slug)}`,
+      title: session.title,
+      category: session.category,
+      description: session.description,
+      language: 'sr',
+      createdAt: new Date().toISOString(),
+      size: session.size,
+      mimeType: session.videoType,
+      duration: Math.max(...session.segments.map((segment) => segment.end)),
+      segmentsCount: session.segments.length,
+      videoUrl: publicObjectUrl(session.videoKey),
+      subtitleUrl: publicObjectUrl(session.subtitleKey),
+      thumbnailUrl: genericPublicThumbnailUrl,
+      segments: session.segments,
+    };
+    await savePublicMetadata(metadata);
+    try {
+      metadata = await createPublicThumbnail(metadata);
+    } catch (thumbnailError) {
+      console.warn('Не удалось создать превью публикации:', thumbnailError.message);
+    }
+    publicUploadSessions.delete(session.sessionId);
+    announcePublicPage(metadata);
+    console.log(`[public-upload] Публикация ${session.id} завершена`);
+    return res.status(201).json(metadata);
+  } catch (error) {
+    session.completing = false;
+    console.error('Не удалось завершить публикацию:', error);
+    return res.status(502).json({ error: error.message || 'Не удалось завершить публикацию видео.' });
+  }
+});
+
+app.delete('/api/public/uploads/:sessionId', async (req, res) => {
+  const session = getPublicUploadSession(req);
+  if (!session) return res.sendStatus(204);
+  publicUploadSessions.delete(session.sessionId);
+  await abortPublicUpload(session);
+  return res.sendStatus(204);
+});
+
+const publicUploadCleanupTimer = setInterval(async () => {
+  const expired = [...publicUploadSessions.values()].filter((session) => session.expiresAt < Date.now());
+  for (const session of expired) {
+    publicUploadSessions.delete(session.sessionId);
+    await abortPublicUpload(session);
+  }
+}, 30 * 60 * 1000);
+publicUploadCleanupTimer.unref();
 
 app.get('/api/public/videos', async (req, res) => {
   if (!publicLibraryConfigured) return res.json({ configured: false, items: [] });
@@ -815,6 +1061,12 @@ app.post(
         ContentType: 'application/json; charset=utf-8',
         CacheControl: 'no-cache',
       }));
+
+      notifyIndexNow([
+        metadata.pageUrl,
+        `https://${canonicalHost}/subtitles`,
+        `https://${canonicalHost}/sitemap.xml`,
+      ]).catch((error) => console.warn(`[indexnow] Не удалось отправить новую публикацию: ${error.message}`));
 
       return res.status(201).json(metadata);
     } catch (error) {
@@ -1918,7 +2170,7 @@ app.post('/api/youtube/download', async (req, res) => {
         noPlaylist: true,
         verbose: true,
         noCheckCertificates: true,
-      }), { timeout: 8 * 60 * 1000 });
+      }), { timeout: 45 * 60 * 1000 });
     } catch (error) {
       throw youtubeFailure(error, 'download', requestId);
     }
@@ -1928,8 +2180,8 @@ app.post('/api/youtube/download', async (req, res) => {
     if (!resultFile) throw new Error('Не удалось найти скачанный файл видео.');
     const resultPath = path.join(tempDir, resultFile);
     const stats = await stat(resultPath);
-    if (stats.size > 500 * 1024 * 1024) {
-      const tooBigError = new Error('Видео с YouTube больше 500 МБ.');
+    if (stats.size > maxVideoBytes) {
+      const tooBigError = new Error('Видео с YouTube больше 2 ГБ.');
       tooBigError.status = 413;
       throw tooBigError;
     }
@@ -2299,7 +2551,7 @@ app.use((req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'Файл больше 500 МБ.' });
+    return res.status(413).json({ error: 'Файл больше 2 ГБ.' });
   }
   if (error instanceof multer.MulterError) {
     return res.status(400).json({

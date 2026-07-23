@@ -42,6 +42,8 @@ const PROJECTS_KEY = 'recnik-projects-v1';
 const API_KEY_STORAGE_KEY = 'recnik-groq-key';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_CATEGORIES = ['все', 'фильм', 'мультфильм', 'блог', 'интервью', 'новости', 'обучение', 'другое'];
+const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
+const PUBLIC_UPLOAD_CONCURRENCY = 3;
 const DEFAULT_PAGE_TITLE = 'Сербские субтитры для видео онлайн — Читавук-речник';
 const DEFAULT_PAGE_DESCRIPTION = 'Онлайн-сервис создаёт сербские субтитры из видео на русском, английском и других языках, экспортирует SRT, VTT и MP4 и помогает собирать личный словарь.';
 
@@ -79,6 +81,101 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function responsePayload(response) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || `Сервер вернул ошибку ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function publishVideoInChunks(file, metadata, onProgress) {
+  onProgress({ percent: 1, stage: 'Готовим защищённую загрузку частями', etaSeconds: null });
+  const startResponse = await fetch(apiUrl('/api/public/uploads'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...metadata,
+      filename: file.name,
+      mimeType: file.type,
+      size: file.size,
+    }),
+  });
+  const session = await responsePayload(startResponse);
+  const startedAt = performance.now();
+  let uploadedBytes = 0;
+  let completedParts = 0;
+  let nextPartIndex = 0;
+
+  const uploadPart = async (partIndex) => {
+    const partNumber = partIndex + 1;
+    const start = partIndex * session.chunkSize;
+    const end = Math.min(file.size, start + session.chunkSize);
+    const chunk = file.slice(start, end);
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetch(apiUrl(`/api/public/uploads/${session.sessionId}/parts/${partNumber}`), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: chunk,
+        });
+        await responsePayload(response);
+        uploadedBytes += chunk.size;
+        completedParts += 1;
+        const elapsedSeconds = Math.max(0.1, (performance.now() - startedAt) / 1000);
+        const bytesPerSecond = uploadedBytes / elapsedSeconds;
+        onProgress({
+          percent: 3 + ((uploadedBytes / file.size) * 90),
+          stage: `Передаём видео частями: ${completedParts} из ${session.totalParts}`,
+          etaSeconds: bytesPerSecond > 0 ? (file.size - uploadedBytes) / bytesPerSecond : null,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (error.status && error.status < 500 && error.status !== 408 && error.status !== 429) break;
+        if (attempt < 3) {
+          onProgress({
+            percent: 3 + ((uploadedBytes / file.size) * 90),
+            stage: `Связь прервалась, повторяем часть ${partNumber}`,
+            etaSeconds: null,
+          });
+          await wait(attempt * 1000);
+        }
+      }
+    }
+    throw lastError || new Error(`Не удалось передать часть ${partNumber}.`);
+  };
+
+  try {
+    const workers = Array.from(
+      { length: Math.min(PUBLIC_UPLOAD_CONCURRENCY, session.totalParts) },
+      async () => {
+        while (nextPartIndex < session.totalParts) {
+          const partIndex = nextPartIndex;
+          nextPartIndex += 1;
+          await uploadPart(partIndex);
+        }
+      },
+    );
+    await Promise.all(workers);
+    onProgress({ percent: 96, stage: 'Собираем видео и создаём обложку', etaSeconds: null });
+    const completeResponse = await fetch(apiUrl(`/api/public/uploads/${session.sessionId}/complete`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const result = await responsePayload(completeResponse);
+    onProgress({ percent: 100, stage: 'Публикация готова', etaSeconds: 0 });
+    return result;
+  } catch (error) {
+    fetch(apiUrl(`/api/public/uploads/${session.sessionId}`), { method: 'DELETE' }).catch(() => {});
+    throw error;
+  }
+}
+
 async function requestWordTranslation(word, context, apiKey) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['x-groq-api-key'] = apiKey;
@@ -99,7 +196,7 @@ function startTranscriptionJob(form, apiKey, onProgress) {
     const startedAt = performance.now();
     request.open('POST', apiUrl('/api/transcribe/jobs'));
     if (apiKey) request.setRequestHeader('x-groq-api-key', apiKey);
-    request.timeout = 10 * 60 * 1000;
+    request.timeout = 60 * 60 * 1000;
     request.upload.onprogress = (event) => {
       if (!event.lengthComputable) {
         onProgress({ percent: 5, stage: 'Загружаем видео на сервер', etaSeconds: null });
@@ -119,8 +216,8 @@ function startTranscriptionJob(form, apiKey, onProgress) {
       error.code = payload.code;
       return reject(error);
     };
-    request.onerror = () => reject(new Error('Соединение с Render прервалось во время загрузки видео.'));
-    request.ontimeout = () => reject(new Error('Загрузка видео на Render заняла больше десяти минут и была остановлена.'));
+    request.onerror = () => reject(new Error('Соединение с сервером прервалось во время загрузки видео.'));
+    request.ontimeout = () => reject(new Error('Загрузка видео на сервер заняла больше часа и была остановлена.'));
     request.send(form);
   });
 }
@@ -131,7 +228,7 @@ function downloadYoutubeVideo(url, onProgress) {
     request.open('POST', apiUrl('/api/youtube/download'));
     request.setRequestHeader('Content-Type', 'application/json');
     request.responseType = 'blob';
-    request.timeout = 10 * 60 * 1000;
+    request.timeout = 60 * 60 * 1000;
     request.onprogress = (event) => {
       if (!event.lengthComputable) {
         onProgress({ percent: 5, stage: 'Скачиваем видео с YouTube на сервер', etaSeconds: null });
@@ -170,7 +267,7 @@ function downloadYoutubeVideo(url, onProgress) {
       reader.readAsText(request.response);
     };
     request.onerror = () => reject(new Error('Соединение с сервером прервалось во время скачивания видео.'));
-    request.ontimeout = () => reject(new Error('Скачивание видео с YouTube заняло больше десяти минут и было остановлено.'));
+    request.ontimeout = () => reject(new Error('Скачивание видео с YouTube заняло больше часа и было остановлено.'));
     request.send(JSON.stringify({ url }));
   });
 }
@@ -351,7 +448,7 @@ function UploadZone({ onFile }) {
       <div className="upload-icon"><Upload size={27} strokeWidth={1.7} /></div>
       <strong>Перетащите видео сюда</strong>
       <span>или нажмите, чтобы выбрать файл</span>
-      <p className="upload-formats">Поддерживаются MP4, MOV, WEBM и MKV. Максимальный размер исходного видео составляет 500 МБ.</p>
+      <p className="upload-formats">Поддерживаются MP4, MOV, WEBM и MKV. Максимальный размер исходного видео составляет 2 ГБ.</p>
     </div>
   );
 }
@@ -1170,7 +1267,7 @@ function ProcessingBanner({ kind, progress }) {
   if (!kind) return null;
   const title = kind === 'burn' ? 'Создаём видео с субтитрами' : kind === 'publish' ? 'Публикуем видео анонимно' : kind === 'youtube' ? 'Скачиваем видео с YouTube' : 'Готовим сербские субтитры';
   const copy = kind === 'burn' ? 'Это может занять несколько минут…' : kind === 'publish' ? 'Передаём видео и готовые субтитры в публичное хранилище…' : kind === 'youtube' ? 'Загружаем ролик на сервер и передаём его в браузер…' : 'Извлекаем звук и расставляем таймкоды…';
-  if ((kind === 'transcribe' || kind === 'youtube') && progress) {
+  if ((kind === 'transcribe' || kind === 'youtube' || kind === 'publish') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
     const remaining = remainingLabel(progress.etaSeconds);
     return (
@@ -1266,8 +1363,8 @@ export default function App() {
       notify('Выберите видеофайл');
       return null;
     }
-    if (file.size > 500 * 1024 * 1024) {
-      notify('Файл больше 500 МБ');
+    if (file.size > MAX_VIDEO_BYTES) {
+      notify('Файл больше 2 ГБ');
       return null;
     }
     const id = crypto.randomUUID();
@@ -1470,17 +1567,15 @@ export default function App() {
     if (!API_BASE_URL && window.location.hostname.endsWith('.netlify.app')) return notify('Сначала подключите Render через VITE_API_BASE_URL в Netlify');
 
     setProcessing('publish');
+    setTranscriptionProgress({ percent: 1, stage: 'Готовим публикацию', etaSeconds: null });
     try {
-      const form = new FormData();
-      form.append('video', file, file.name);
-      form.append('title', title);
-      form.append('category', category);
-      form.append('description', description);
-      form.append('rightsConfirmed', String(rightsConfirmed));
-      form.append('transcript', JSON.stringify(activeProject.transcript));
-      const response = await fetch(apiUrl('/api/public/videos'), { method: 'POST', body: form });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Не удалось опубликовать видео.');
+      const payload = await publishVideoInChunks(file, {
+        title,
+        category,
+        description,
+        rightsConfirmed,
+        transcript: activeProject.transcript,
+      }, setTranscriptionProgress);
       setPublishOpen(false);
       setLibraryRefresh((value) => value + 1);
       setActiveId(null);
@@ -1491,6 +1586,7 @@ export default function App() {
       notify(error.message);
     } finally {
       setProcessing(null);
+      setTranscriptionProgress(null);
     }
   };
 
