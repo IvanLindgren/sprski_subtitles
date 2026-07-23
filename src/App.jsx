@@ -554,16 +554,12 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
         <div className="hero-copy">
           <h1>Сервис для создания сербских субтитров к видео на любом языке.</h1>
           <p>Загрузите сербский, английский, русский или другой ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.</p>
-          <div className="hero-limits">
-            <p>Сайт по умолчанию использует общий ключ Groq с сервера. Свой ключ можно добавить в настройках только при желании.</p>
-          </div>
           <img className="hero-wolf" src="/assets/citavuk-guide.webp" alt="Читавук помогает разобраться с субтитрами" />
         </div>
 
         <div className="upload-card">
           <div className="card-title">
             <div><span>НОВОЕ ВИДЕО</span><h2>Начать разбор</h2></div>
-            <div className="free-seal"><Sparkles size={14} /> FREE</div>
           </div>
           <UploadZone onFile={onFile} />
           <YoutubeDownload onImport={onYoutubeImport} busy={youtubeBusy} />
@@ -1187,7 +1183,7 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
         <div className="modal-icon"><Globe2 size={24} /></div>
         <span className="modal-kicker">ПУБЛИЧНАЯ БИБЛИОТЕКА</span>
         <h2>Опубликовать анонимно</h2>
-        <p>Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Имя, ключ Groq и данные личного словаря не передаются и не публикуются.</p>
+        <p>Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Личные настройки и данные словаря не передаются и не публикуются.</p>
         <label>НАЗВАНИЕ
           <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} required />
         </label>
@@ -1236,24 +1232,64 @@ function SettingsModal({ value, onSave, onClose }) {
   );
 }
 
+const WELCOME_STEPS = [
+  {
+    title: 'Загрузите видео',
+    text: 'Перетащите видео в область загрузки, выберите файл на устройстве или вставьте ссылку на YouTube.',
+    image: '/assets/onboarding-upload.png',
+    alt: 'Загрузка видео на главной странице Читавука',
+  },
+  {
+    title: 'Создайте субтитры',
+    text: 'Откройте загруженное видео и нажмите «Создать субтитры». Читавук распознает речь и подготовит сербский текст.',
+    image: '/assets/onboarding-transcribe.png',
+    alt: 'Кнопка создания сербских субтитров в проекте',
+  },
+  {
+    title: 'Смотрите и сохраняйте',
+    text: 'Смотрите видео с субтитрами, нажимайте на незнакомые слова и сохраняйте результат в VTT, SRT или MP4.',
+    image: '/assets/onboarding-result.png',
+    alt: 'Готовые субтитры и личный словарь в Читавуке',
+  },
+];
+
 function WelcomeModal({ onClose }) {
+  const [step, setStep] = useState(0);
+  const current = WELCOME_STEPS[step];
+  const isLast = step === WELCOME_STEPS.length - 1;
+
   return (
     <div className="modal-backdrop welcome-backdrop" onMouseDown={onClose}>
       <section className="welcome-modal" onMouseDown={(event) => event.stopPropagation()}>
         <button className="modal-close" onClick={onClose} aria-label="Закрыть инструкцию"><X size={20} /></button>
-        <div className="welcome-wolf-wrap">
-          <img src="/assets/citavuk-welcome.webp" alt="Читавук приветствует вас" />
+        <div className="welcome-shot-wrap">
+          <img key={current.image} src={current.image} alt={current.alt} />
+          <span className="welcome-shot-counter">{step + 1} / {WELCOME_STEPS.length}</span>
         </div>
         <div className="welcome-content">
-          <span className="modal-kicker">ПЕРЕД НАЧАЛОМ</span>
-          <h2>Познакомьтесь: Читавук</h2>
-          <p>Он распознает речь на исходном языке и превратит её в синхронные сербские субтитры.</p>
-          <p className="welcome-guide">Сервис уже подключён к общему ключу Groq, поэтому перед началом ничего вводить не нужно. При желании собственный ключ можно добавить позже в настройках.</p>
-          <div className="welcome-limits">
-            <p>Загрузите видео на любом языке. Читавук определит речь, сохранит таймкоды и переведёт готовые фрагменты на естественный сербский.</p>
+          <span className="modal-kicker">КАК ЭТО РАБОТАЕТ</span>
+          <h2>{current.title}</h2>
+          <p>{current.text}</p>
+          <div className="welcome-step-nav" aria-label="Шаги инструкции">
+            {WELCOME_STEPS.map((item, index) => (
+              <button
+                key={item.title}
+                type="button"
+                className={index === step ? 'active' : ''}
+                onClick={() => setStep(index)}
+                aria-label={`Шаг ${index + 1}: ${item.title}`}
+                aria-current={index === step ? 'step' : undefined}
+              >
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                {item.title}
+              </button>
+            ))}
           </div>
           <div className="welcome-actions">
-            <button className="primary-button" onClick={onClose}>Начать</button>
+            {step > 0 && <button className="secondary-button" onClick={() => setStep((value) => value - 1)}>Назад</button>}
+            <button className="primary-button" onClick={() => isLast ? onClose() : setStep((value) => value + 1)}>
+              {isLast ? 'Начать' : 'Далее'}
+            </button>
           </div>
         </div>
       </section>
@@ -1285,7 +1321,7 @@ function ProcessingBanner({ kind, progress }) {
         <div className="processing-progress-track"><span style={{ width: `${percent}%` }} /></div>
         <div className="processing-progress-copy">
           <span>{progress.stage || copy}</span>
-          <small>{remaining || (percent >= 60 && percent < 99 ? 'Groq отвечает дольше обычного, задача продолжает выполняться' : 'оцениваем оставшееся время')}</small>
+          <small>{remaining || (percent >= 60 && percent < 99 ? 'Сервис отвечает дольше обычного, задача продолжает выполняться' : 'оцениваем оставшееся время')}</small>
         </div>
       </div>
     );
