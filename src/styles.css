@@ -456,6 +456,24 @@ footer a:hover { text-decoration: underline; }
 .settings-modal label + label { margin-top: 11px; }
 .settings-modal label input { width: 100%; height: 43px; margin-top: 7px; border: 1px solid var(--line); background: white; padding: 0 12px; outline: 0; color: var(--ink); letter-spacing: .04em; }
 .settings-modal label input:focus { border-color: var(--red); }
+.support-modal { width: min(570px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--paper-light); border: 1px solid rgba(255,255,255,.25); padding: 38px 40px 34px; position: relative; box-shadow: 0 30px 80px rgba(0,0,0,.3); }
+.support-modal::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 7px; background: repeating-linear-gradient(45deg, var(--red) 0 7px, var(--paper) 7px 11px, var(--navy) 11px 18px, var(--paper) 18px 22px); }
+.support-modal h2 { margin: 8px 0 10px; font-family: 'Prata', Georgia, serif; font-size: 30px; font-weight: 400; }
+.support-modal > p { margin: 0 0 23px; color: var(--muted); font-size: 10px; line-height: 1.65; }
+.support-modal form { display: grid; gap: 14px; }
+.support-modal label { display: grid; gap: 7px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .13em; }
+.support-modal input, .support-modal textarea { width: 100%; border: 1px solid var(--line); background: white; padding: 11px 12px; color: var(--ink); outline: 0; font: inherit; font-size: 10px; letter-spacing: 0; resize: vertical; }
+.support-modal input { height: 43px; }
+.support-modal input:focus, .support-modal textarea:focus { border-color: var(--red); }
+.support-file { border: 1px dashed rgba(165,45,45,.38); background: rgba(165,45,45,.035); padding: 13px; cursor: pointer; }
+.support-file > span { display: flex; align-items: center; gap: 7px; color: var(--ink); }
+.support-file input { height: auto; border: 0; background: transparent; padding: 4px 0 0; font-size: 9px; cursor: pointer; }
+.support-file small { color: var(--muted); font-weight: 400; letter-spacing: 0; }
+.support-honeypot { position: absolute !important; left: -10000px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; }
+.support-error { border-left: 3px solid var(--red); background: rgba(165,45,45,.08); color: #7a1c1c; padding: 10px 12px; font-size: 9px; line-height: 1.5; }
+.support-submit { justify-self: end; min-width: 175px; }
+.support-fab { position: fixed; z-index: 90; right: 22px; bottom: 20px; min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 15px; color: white; background: var(--navy); border: 1px solid rgba(255,255,255,.2); box-shadow: 0 12px 30px rgba(14,33,46,.24); font-size: 9px; font-weight: 800; cursor: pointer; }
+.support-fab:hover { background: #214b62; }
 .free-info { display: flex; gap: 11px; background: #e9efe9; border-left: 3px solid #4e8160; color: #315e42; padding: 12px 13px; margin: 16px 0 22px; }
 .free-info p { margin: 0; font-size: 8px; line-height: 1.55; }
 .modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -499,7 +517,7 @@ footer a:hover { text-decoration: underline; }
 .processing-progress-copy small { color: rgba(255,255,255,.5); font-size: 7px; text-align: right; }
 .toast { position: fixed; z-index: 120; left: 50%; bottom: 24px; transform: translateX(-50%); background: #222; color: white; border-left: 3px solid var(--gold); display: flex; align-items: center; gap: 8px; padding: 11px 17px; box-shadow: 0 10px 30px rgba(0,0,0,.22); font-size: 10px; max-width: min(460px, calc(100vw - 30px)); }
 .toast svg { color: var(--gold); flex: 0 0 auto; }
-.telegram-notice { position: fixed; z-index: 118; right: 22px; bottom: 22px; width: min(390px, calc(100vw - 30px)); overflow: hidden; display: grid; grid-template-columns: 44px 1fr 24px; gap: 13px; align-items: start; padding: 16px 14px 15px 16px; color: var(--ink); background: rgba(250,247,240,.98); border: 1px solid rgba(35,31,28,.15); box-shadow: 0 18px 48px rgba(22,29,32,.24); animation: telegram-notice-in .35s ease-out both, telegram-notice-out .35s ease-in 4.65s forwards; }
+.telegram-notice { position: fixed; z-index: 118; right: 22px; bottom: 74px; width: min(390px, calc(100vw - 30px)); overflow: hidden; display: grid; grid-template-columns: 44px 1fr 24px; gap: 13px; align-items: start; padding: 16px 14px 15px 16px; color: var(--ink); background: rgba(250,247,240,.98); border: 1px solid rgba(35,31,28,.15); box-shadow: 0 18px 48px rgba(22,29,32,.24); animation: telegram-notice-in .35s ease-out both, telegram-notice-out .35s ease-in 4.65s forwards; }
 .telegram-notice-icon { width: 44px; height: 44px; display: grid; place-items: center; color: white; background: var(--navy); }
 .telegram-notice-copy { min-width: 0; }
 .telegram-notice-copy strong { display: block; margin: 1px 0 5px; font-family: 'Prata', Georgia, serif; font-size: 14px; font-weight: 400; }
@@ -602,6 +620,11 @@ footer a:hover { text-decoration: underline; }
   footer span:first-child, footer button { display: none; }
   footer span:nth-child(2), footer a { display: block; }
   .settings-modal { padding: 30px 23px 24px; }
+  .support-modal { padding: 34px 22px 25px; }
+  .support-modal h2 { font-size: 25px; }
+  .support-submit { width: 100%; justify-self: stretch; }
+  .support-fab { right: 12px; bottom: 12px; width: 42px; height: 42px; min-height: 42px; padding: 0; justify-content: center; border-radius: 50%; }
+  .support-fab span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
   .modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .modal-actions a { justify-content: center; }
   .welcome-content { padding: 27px 21px 23px; }
@@ -630,7 +653,7 @@ footer a:hover { text-decoration: underline; }
   .processing-banner--progress { top: 82px; }
   .processing-progress-copy { align-items: flex-start; flex-direction: column; gap: 4px !important; }
   .processing-progress-copy small { text-align: left; }
-  .telegram-notice { left: 12px; right: 12px; bottom: 12px; width: auto; grid-template-columns: 40px 1fr 24px; padding: 14px 12px 14px 14px; }
+  .telegram-notice { left: 12px; right: 12px; bottom: 64px; width: auto; grid-template-columns: 40px 1fr 24px; padding: 14px 12px 14px 14px; }
   .telegram-notice-icon { width: 40px; height: 40px; }
 }
 

@@ -122,6 +122,10 @@ const sharedTranscriptionAttempts = new Map();
 const translationAttempts = new Map();
 const translationCache = new Map();
 const youtubeDownloadAttempts = new Map();
+const localeLookupCache = new Map();
+const serbianLocaleCountries = new Set(['RS', 'ME', 'BA', 'HR', 'XK']);
+const russianLocaleCountries = new Set(['RU', 'BY', 'KZ', 'KG', 'AM', 'TJ', 'UZ']);
+const localeLookupTtlMs = 24 * 60 * 60 * 1000;
 let activeTranscriptions = 0;
 let activeSharedTranscriptions = 0;
 const maxActiveTranscriptions = Math.max(1, Math.min(4, Number.parseInt(process.env.MAX_ACTIVE_TRANSCRIPTIONS || '2', 10) || 2));
@@ -251,6 +255,54 @@ app.get('/api/health', (_req, res) => {
     publicLibrary: publicLibraryConfigured,
     yandexTranslate: yandexTranslateConfigured,
   });
+});
+
+function localeFromBrowserHeader(header) {
+  const language = String(header || '').trim().toLowerCase();
+  if (/^(sr|hr|bs)\b/.test(language)) return 'sr';
+  if (/^ru\b/.test(language)) return 'ru';
+  return 'en';
+}
+
+function localeFromCountry(countryCode, fallback) {
+  const country = String(countryCode || '').trim().toUpperCase();
+  if (serbianLocaleCountries.has(country)) return 'sr';
+  if (russianLocaleCountries.has(country)) return 'ru';
+  return country ? 'en' : fallback;
+}
+
+app.get('/api/locale', async (req, res) => {
+  const fallback = localeFromBrowserHeader(req.get('accept-language'));
+  const ipAddress = String(req.ip || '').replace(/^::ffff:/, '').slice(0, 120);
+  const isLocalAddress = !ipAddress
+    || ipAddress === '::1'
+    || ipAddress === '127.0.0.1'
+    || ipAddress.startsWith('10.')
+    || ipAddress.startsWith('192.168.')
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(ipAddress);
+  if (isLocalAddress) return res.json({ locale: fallback, source: 'browser' });
+
+  const cached = localeLookupCache.get(ipAddress);
+  if (cached && Date.now() - cached.createdAt < localeLookupTtlMs) {
+    return res.json({ locale: cached.locale, source: 'country' });
+  }
+
+  try {
+    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}?fields=success,country_code`, {
+      signal: AbortSignal.timeout(2500),
+      headers: { Accept: 'application/json' },
+    });
+    const payload = await response.json();
+    const locale = payload.success === false ? fallback : localeFromCountry(payload.country_code, fallback);
+    localeLookupCache.set(ipAddress, { locale, createdAt: Date.now() });
+    if (localeLookupCache.size > 10000) {
+      const oldestKey = localeLookupCache.keys().next().value;
+      localeLookupCache.delete(oldestKey);
+    }
+    return res.json({ locale, source: payload.country_code ? 'country' : 'browser' });
+  } catch {
+    return res.json({ locale: fallback, source: 'browser' });
+  }
 });
 
 app.get('/api/notifications/public-key', (_req, res) => {
@@ -1764,16 +1816,17 @@ function updateTranscriptionJob(id, patch) {
 async function sendTranscriptionNotification(job, succeeded) {
   if (!pushNotificationsConfigured || !job?.pushSubscription) return;
   const english = job.locale === 'en';
+  const serbian = job.locale === 'sr';
   const payload = succeeded
     ? {
-      title: english ? 'Čitavuk: subtitles are ready' : 'Читавук: субтитры готовы',
-      body: english ? 'Open the site to watch the video with Serbian subtitles.' : 'Откройте сайт, чтобы посмотреть видео с сербскими субтитрами.',
+      title: english ? 'Čitavuk: subtitles are ready' : serbian ? 'Čitavuk: titlovi su spremni' : 'Читавук: субтитры готовы',
+      body: english ? 'Open the site to watch the video with Serbian subtitles.' : serbian ? 'Otvorite sajt da pogledate video sa srpskim titlovima.' : 'Откройте сайт, чтобы посмотреть видео с сербскими субтитрами.',
       url: '/',
       tag: `transcription-${job.id}`,
     }
     : {
-      title: english ? 'Čitavuk: processing failed' : 'Читавук: не удалось обработать видео',
-      body: english ? 'Open the site to see the error and try again.' : 'Откройте сайт, чтобы увидеть причину и повторить попытку.',
+      title: english ? 'Čitavuk: processing failed' : serbian ? 'Čitavuk: obrada videa nije uspela' : 'Читавук: не удалось обработать видео',
+      body: english ? 'Open the site to see the error and try again.' : serbian ? 'Otvorite sajt da vidite grešku i pokušate ponovo.' : 'Откройте сайт, чтобы увидеть причину и повторить попытку.',
       url: '/',
       tag: `transcription-${job.id}`,
     };
@@ -2421,7 +2474,7 @@ app.post(
     const job = transcriptionJobs.get(id);
     if (job) {
       job.projectId = String(req.body?.projectId || '').slice(0, 100);
-      job.locale = req.body?.locale === 'en' ? 'en' : 'ru';
+      job.locale = ['en', 'sr'].includes(req.body?.locale) ? req.body.locale : 'ru';
       try {
         const subscription = JSON.parse(String(req.body?.pushSubscription || 'null'));
         if (subscription?.endpoint && subscription?.keys?.p256dh && subscription?.keys?.auth) {

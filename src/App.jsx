@@ -14,11 +14,14 @@ import {
   Gauge,
   Globe2,
   KeyRound,
+  LifeBuoy,
   LoaderCircle,
+  Mail,
   Maximize2,
   Pause,
   Play,
   Plus,
+  Paperclip,
   Search,
   Send,
   Settings2,
@@ -55,16 +58,143 @@ const PUBLIC_CATEGORY_EN = {
   обучение: 'learning',
   другое: 'other',
 };
+const PUBLIC_CATEGORY_SR = {
+  все: 'sve',
+  фильм: 'film',
+  мультфильм: 'crtani film',
+  блог: 'blog',
+  интервью: 'intervju',
+  новости: 'vesti',
+  обучение: 'učenje',
+  другое: 'ostalo',
+};
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const PUBLIC_UPLOAD_CONCURRENCY = 3;
 const TELEGRAM_NOTICE_STORAGE_KEY = 'citavuk-telegram-notice-seen-at';
 const TELEGRAM_NOTICE_INTERVAL = 7 * 24 * 60 * 60 * 1000;
 const LANGUAGE_STORAGE_KEY = 'citavuk-language';
+const WELCOME_STORAGE_KEY = 'citavuk-welcome-completed-v3';
 const PENDING_TRANSCRIPTION_KEY = 'citavuk-pending-transcription';
 const DEFAULT_PAGE_TITLE = 'Сербские субтитры для видео онлайн — Читавук-речник';
 const DEFAULT_PAGE_DESCRIPTION = 'Онлайн-сервис создаёт сербские субтитры из видео на русском, английском и других языках, экспортирует SRT, VTT и MP4 и помогает собирать личный словарь.';
-const ENGLISH_PAGE_TITLE = 'Serbian subtitles for any video online — Čitavuk';
+const ENGLISH_PAGE_TITLE = 'Serbian subtitles for any video online — Čitavuk Dictionary';
 const ENGLISH_PAGE_DESCRIPTION = 'Create synchronized Serbian subtitles from videos in English, Russian and other languages, export SRT, VTT or MP4, and build a personal vocabulary.';
+const SERBIAN_PAGE_TITLE = 'Srpski titlovi za bilo koji video — Čitavuk-rečnik';
+const SERBIAN_PAGE_DESCRIPTION = 'Napravite sinhronizovane srpske titlove za video na bilo kom jeziku, izvezite SRT, VTT ili MP4 i sačuvajte nove reči u ličnom rečniku.';
+const SERBIAN_COPY = {
+  'На главную': 'Na početnu',
+  'сербские субтитры и видеословарь': 'srpski titlovi i video-rečnik',
+  'Основная навигация': 'Glavna navigacija',
+  'Мои видео': 'Moji video-snimci',
+  'Создать субтитры': 'Napravi titlove',
+  'Библиотека': 'Biblioteka',
+  'Язык сайта': 'Jezik sajta',
+  'Уведомления включены': 'Obaveštenja su uključena',
+  'Включить уведомления': 'Uključi obaveštenja',
+  'Настройки API': 'API podešavanja',
+  'Перетащите видео сюда': 'Prevucite video ovde',
+  'или нажмите, чтобы выбрать файл': 'ili kliknite da izaberete datoteku',
+  'Поддерживаются MP4, MOV, WEBM и MKV. Максимальный размер исходного видео составляет 2 ГБ.': 'Podržani su MP4, MOV, WEBM i MKV. Najveća dozvoljena veličina izvornog videa je 2 GB.',
+  'Вставьте полную ссылку youtube.com или youtu.be.': 'Unesite punu youtube.com ili youtu.be vezu.',
+  'Взять видео с YouTube': 'Preuzmi video sa YouTube-a',
+  'Вставьте ссылку — Читавук сам скачает ролик и начнёт распознавание. Используйте только видео, которое вам разрешено скачивать.': 'Unesite vezu — Čitavuk će preuzeti video i pokrenuti prepoznavanje. Koristite samo video-snimke koje smete da preuzmete.',
+  'Ссылка на видео YouTube': 'Veza ka YouTube videu',
+  'Скачиваем…': 'Preuzimamo…',
+  'Скачать и распознать': 'Preuzmi i prepoznaj',
+  'Не получилось? Скачать вручную через SaveFrom': 'Ne radi? Preuzmite ručno preko SaveFrom-a',
+  'Удалить проект': 'Obriši projekat',
+  'Сервис для создания сербских субтитров к видео на любом языке.': 'Servis za pravljenje srpskih titlova za video na bilo kom jeziku.',
+  'Загрузите сербский, английский, русский или другой ролик, получите синхронный сербский текст и собирайте личный словарь прямо во время просмотра.': 'Otpremite video na srpskom, engleskom, ruskom ili drugom jeziku, dobijte sinhronizovan srpski tekst i pravite lični rečnik tokom gledanja.',
+  'Читавук помогает разобраться с субтитрами': 'Čitavuk pomaže pri radu sa titlovima',
+  'НОВОЕ ВИДЕО': 'NOVI VIDEO',
+  'Начать разбор': 'Počni obradu',
+  'Открыть пример проекта': 'Otvori primer projekta',
+  'Видео остается в памяти вашего браузера': 'Video ostaje sačuvan u vašem pregledaču',
+  'КАК ЭТО РАБОТАЕТ': 'KAKO RADI',
+  'Сербские субтитры без ручной разметки': 'Srpski titlovi bez ručnog određivanja vremena',
+  'Загрузите видео': 'Otpremite video',
+  'Получите сербский текст': 'Dobijte srpski tekst',
+  'Смотрите или скачивайте': 'Gledajte ili preuzmite',
+  'ВАША ПОЛКА': 'VAŠA POLICA',
+  'Недавние видео': 'Nedavni video-snimci',
+  'Пауза': 'Pauza',
+  'Воспроизвести': 'Pusti',
+  'РАЗБОР ВИДЕО': 'OBRADA VIDEA',
+  'пример проекта': 'primer projekta',
+  'видео': 'video',
+  'Исходное видео не найдено': 'Izvorni video nije pronađen',
+  'Загрузите файл заново, чтобы продолжить.': 'Ponovo otpremite datoteku da biste nastavili.',
+  'Видео готово к распознаванию': 'Video je spreman za prepoznavanje',
+  'Слушаем речь…': 'Slušamo govor…',
+  'Закрыть сообщение об ошибке': 'Zatvori poruku o grešci',
+  'Уже в словаре': 'Već je u rečniku',
+  'Добавить в словарь': 'Dodaj u rečnik',
+  'ТРАНСКРИПТ': 'TRANSKRIPT',
+  'Текст видео': 'Tekst videa',
+  'Опубликовать анонимно': 'Objavi anonimno',
+  'Опубликовать': 'Objavi',
+  'Распознать заново': 'Ponovo prepoznaj',
+  'Повторить': 'Ponovi',
+  'Найти в тексте…': 'Pretraži tekst…',
+  'Нажмите на слово, чтобы перевести и сохранить': 'Kliknite na reč da je prevedete i sačuvate',
+  'Здесь появится текст': 'Ovde će se pojaviti tekst',
+  'ЛИЧНЫЙ СЛОВАРЬ': 'LIČNI REČNIK',
+  'Найти слово…': 'Pronađi reč…',
+  'Подбираем русский и английский переводы…': 'Tražimo ruski i engleski prevod…',
+  'Перевод временно недоступен. Нажмите на слово ещё раз.': 'Prevod trenutno nije dostupan. Kliknite na reč ponovo.',
+  'Русский перевод': 'Ruski prevod',
+  'Заметка или пример': 'Beleška ili primer',
+  'Слово не найдено': 'Reč nije pronađena',
+  'Словарь пока пуст': 'Rečnik je još prazan',
+  'Попробуйте другой запрос.': 'Pokušajte drugu pretragu.',
+  'Собираем MP4…': 'Pravimo MP4…',
+  'MP4 с субтитрами': 'MP4 sa titlovima',
+  'недоступно в демо': 'nije dostupno u demonstraciji',
+  'титры вшиты в видео': 'titlovi su ugrađeni u video',
+  'К проектам': 'Nazad na projekte',
+  'сохранено локально': 'sačuvano lokalno',
+  'ожидает обработки': 'čeka obradu',
+  'Главная': 'Početna',
+  'Хлебные крошки': 'Putanja stranice',
+  'Ко всем публикациям': 'Sve publikacije',
+  'СЕРБСКИЕ СУБТИТРЫ': 'SRPSKI TITLOVI',
+  'АНОНИМНЫЕ ПУБЛИКАЦИИ': 'ANONIMNE PUBLIKACIJE',
+  'Сербское видео с готовыми субтитрами': 'Video-snimci sa gotovim srpskim titlovima',
+  'Фильтр по категории': 'Filtriranje po kategoriji',
+  'Читавук открывает библиотеку…': 'Čitavuk otvara biblioteku…',
+  'Публичное хранилище ещё не подключено.': 'Javno skladište još nije povezano.',
+  'Назад': 'Nazad',
+  'Далее': 'Dalje',
+  'Дальше': 'Dalje',
+  'Страницы библиотеки': 'Stranice biblioteke',
+  'ПУБЛИЧНАЯ БИБЛИОТЕКА': 'JAVNA BIBLIOTEKA',
+  'НАЗВАНИЕ': 'NASLOV',
+  'КАТЕГОРИЯ': 'KATEGORIJA',
+  'ОПИСАНИЕ': 'OPIS',
+  'Коротко расскажите, что находится в видео': 'Ukratko opišite sadržaj videa',
+  'Опубликовать видео': 'Objavi video',
+  'Загружаем публикацию…': 'Otpremamo publikaciju…',
+  'Закрыть настройки': 'Zatvori podešavanja',
+  'НЕОБЯЗАТЕЛЬНО': 'NEOBAVEZNO',
+  'Свой ключ Groq API': 'Sopstveni Groq API ključ',
+  'ЛИЧНЫЙ GROQ API KEY': 'LIČNI GROQ API KLJUČ',
+  'Оставьте пустым для общего сервера': 'Ostavite prazno da biste koristili zajednički server',
+  'Получить личный ключ': 'Nabavi lični ključ',
+  'Использовать свой ключ': 'Koristi moj ključ',
+  'Использовать общий сервер': 'Koristi zajednički server',
+  'Закрыть инструкцию': 'Zatvori uputstvo',
+  'Шаги инструкции': 'Koraci uputstva',
+  'Начать': 'Počni',
+  'Создаём видео с субтитрами': 'Pravimo video sa titlovima',
+  'Публикуем видео анонимно': 'Anonimno objavljujemo video',
+  'Скачиваем видео с YouTube': 'Preuzimamo video sa YouTube-a',
+  'Готовим сербские субтитры': 'Pravimo srpske titlove',
+  'Это может занять несколько минут…': 'Ovo može potrajati nekoliko minuta…',
+  'оцениваем оставшееся время': 'procenjujemo preostalo vreme',
+  'Читавук в Telegram': 'Čitavuk na Telegramu',
+  'Открыть канал': 'Otvori kanal',
+  'Закрыть сообщение о Telegram-канале': 'Zatvori poruku o Telegram kanalu',
+};
 const LanguageContext = createContext({ locale: 'ru', setLocale: () => {} });
 
 function useUiLanguage() {
@@ -72,14 +202,40 @@ function useUiLanguage() {
   return {
     locale,
     setLocale,
-    t: (russian, english) => (locale === 'en' ? english : russian),
+    t: (russian, english, serbian) => {
+      if (locale === 'en') return english;
+      if (locale === 'sr') return serbian || SERBIAN_COPY[russian] || english;
+      return russian;
+    },
   };
+}
+
+function publicCategoryLabel(category, locale) {
+  if (locale === 'en') return PUBLIC_CATEGORY_EN[category] || category;
+  if (locale === 'sr') return PUBLIC_CATEGORY_SR[category] || category;
+  return category;
 }
 
 function initialLocale() {
   const queryLocale = new URLSearchParams(window.location.search).get('lang');
-  if (queryLocale === 'en' || queryLocale === 'ru') return queryLocale;
-  return localStorage.getItem(LANGUAGE_STORAGE_KEY) === 'en' ? 'en' : 'ru';
+  if (['en', 'ru', 'sr'].includes(queryLocale)) return queryLocale;
+  const savedLocale = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  return ['en', 'ru', 'sr'].includes(savedLocale) ? savedLocale : 'en';
+}
+
+function hasExplicitLocale() {
+  const queryLocale = new URLSearchParams(window.location.search).get('lang');
+  const savedLocale = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  return ['en', 'ru', 'sr'].includes(queryLocale) || ['en', 'ru', 'sr'].includes(savedLocale);
+}
+
+function shouldShowWelcome() {
+  if (localStorage.getItem(WELCOME_STORAGE_KEY) === '1') return false;
+  if (sessionStorage.getItem('recnik-welcome-seen') === '1') {
+    localStorage.setItem(WELCOME_STORAGE_KEY, '1');
+    return false;
+  }
+  return true;
 }
 
 function readBrowserRoute() {
@@ -92,10 +248,10 @@ function readBrowserRoute() {
 
 function PageMetadata({ title, description, path = '/' }) {
   const { locale } = useUiLanguage();
-  const resolvedTitle = title || (locale === 'en' ? ENGLISH_PAGE_TITLE : DEFAULT_PAGE_TITLE);
-  const resolvedDescription = description || (locale === 'en' ? ENGLISH_PAGE_DESCRIPTION : DEFAULT_PAGE_DESCRIPTION);
+  const resolvedTitle = title || (locale === 'en' ? ENGLISH_PAGE_TITLE : locale === 'sr' ? SERBIAN_PAGE_TITLE : DEFAULT_PAGE_TITLE);
+  const resolvedDescription = description || (locale === 'en' ? ENGLISH_PAGE_DESCRIPTION : locale === 'sr' ? SERBIAN_PAGE_DESCRIPTION : DEFAULT_PAGE_DESCRIPTION);
   const separator = path.includes('?') ? '&' : '?';
-  const localizedPath = locale === 'en' ? `${path}${separator}lang=en` : path;
+  const localizedPath = locale === 'ru' ? path : `${path}${separator}lang=${locale}`;
   useEffect(() => {
     document.title = resolvedTitle;
     document.documentElement.lang = locale;
@@ -105,14 +261,25 @@ function PageMetadata({ title, description, path = '/' }) {
     if (canonical) canonical.setAttribute('href', `https://serbiansubtitles.online${localizedPath}`);
     document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => {
       const language = link.getAttribute('hreflang');
-      link.setAttribute('href', `https://serbiansubtitles.online${language === 'en' ? `${path}${separator}lang=en` : path}`);
+      const languagePath = language === 'en' || language === 'sr'
+        ? `${path}${separator}lang=${language}`
+        : path;
+      link.setAttribute('href', `https://serbiansubtitles.online${languagePath}`);
     });
     const ogTitle = document.querySelector('meta[property="og:title"]');
     const ogDescription = document.querySelector('meta[property="og:description"]');
     const ogUrl = document.querySelector('meta[property="og:url"]');
+    const ogLocale = document.querySelector('meta[property="og:locale"]');
+    const ogSiteName = document.querySelector('meta[property="og:site_name"]');
+    const twitterTitle = document.querySelector('meta[name="twitter:title"]');
+    const twitterDescription = document.querySelector('meta[name="twitter:description"]');
     if (ogTitle) ogTitle.setAttribute('content', resolvedTitle);
     if (ogDescription) ogDescription.setAttribute('content', resolvedDescription);
     if (ogUrl) ogUrl.setAttribute('content', `https://serbiansubtitles.online${localizedPath}`);
+    if (ogLocale) ogLocale.setAttribute('content', locale === 'en' ? 'en_US' : locale === 'sr' ? 'sr_RS' : 'ru_RU');
+    if (ogSiteName) ogSiteName.setAttribute('content', locale === 'en' ? 'Čitavuk Dictionary' : locale === 'sr' ? 'Čitavuk-rečnik' : 'Читавук-речник');
+    if (twitterTitle) twitterTitle.setAttribute('content', resolvedTitle);
+    if (twitterDescription) twitterDescription.setAttribute('content', resolvedDescription);
   }, [locale, localizedPath, path, resolvedDescription, resolvedTitle, separator]);
   return null;
 }
@@ -566,7 +733,7 @@ function Header({ inProject, inLibrary, onHome, onLibrary, onSettings, onNotific
     <header className="site-header">
       <a className="brand" href="/" onClick={(event) => follow(event, onHome)} aria-label={t('На главную', 'Home')}>
         <BrandMark />
-        <span className="brand-copy"><strong>ЧИТАВУК-РЕЧНИК</strong><small>{t('сербские субтитры и видеословарь', 'Serbian subtitles and video dictionary')}</small></span>
+        <span className="brand-copy"><strong>{t('ЧИТАВУК-РЕЧНИК', 'ČITAVUK DICTIONARY', 'ČITAVUK-REČNIK')}</strong><small>{t('сербские субтитры и видеословарь', 'Serbian subtitles and video dictionary')}</small></span>
       </a>
       <div className="header-actions">
         <nav className="site-nav" aria-label={t('Основная навигация', 'Main navigation')}>
@@ -576,6 +743,7 @@ function Header({ inProject, inLibrary, onHome, onLibrary, onSettings, onNotific
         <div className="language-switch" role="group" aria-label={t('Язык сайта', 'Site language')}>
           <button className={locale === 'ru' ? 'is-active' : ''} onClick={() => setLocale('ru')} lang="ru">RU</button>
           <button className={locale === 'en' ? 'is-active' : ''} onClick={() => setLocale('en')} lang="en">EN</button>
+          <button className={locale === 'sr' ? 'is-active' : ''} onClick={() => setLocale('sr')} lang="sr">SR</button>
         </div>
         <button className={`icon-button ${notificationsEnabled ? 'is-enabled' : ''}`} onClick={onNotifications} aria-label={notificationsEnabled ? t('Уведомления включены', 'Notifications enabled') : t('Включить уведомления', 'Enable notifications')}>
           {notificationsEnabled ? <BellRing size={20} /> : <Bell size={20} />}
@@ -696,7 +864,7 @@ function RecentProject({ project, onOpen, onDelete }) {
       </div>
       <div className="recent-copy">
         <strong>{project.name}</strong>
-        <span>{locale === 'en' ? `${project.transcript?.length || 0} segments, ${project.glossary?.length || 0} saved words` : `${project.transcript?.length || 0} ${pluralizeRu(project.transcript?.length || 0, 'фрагмент', 'фрагмента', 'фрагментов')}, ${project.glossary?.length || 0} ${pluralizeRu(project.glossary?.length || 0, 'слово', 'слова', 'слов')} в словаре`}</span>
+        <span>{locale === 'en' ? `${project.transcript?.length || 0} segments, ${project.glossary?.length || 0} saved words` : locale === 'sr' ? `${project.transcript?.length || 0} segmenata, ${project.glossary?.length || 0} sačuvanih reči` : `${project.transcript?.length || 0} ${pluralizeRu(project.transcript?.length || 0, 'фрагмент', 'фрагмента', 'фрагментов')}, ${project.glossary?.length || 0} ${pluralizeRu(project.glossary?.length || 0, 'слово', 'слова', 'слов')} в словаре`}</span>
       </div>
       <button
         className="subtle-icon"
@@ -740,21 +908,21 @@ function Landing({ onFile, onDemo, projects, onOpen, onDelete, onYoutubeImport, 
 
       <section className="process-story">
         <BookOpen size={25} />
-        <p>{t('Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.', 'Čitavuk detects the spoken language, translates the text into Serbian, synchronizes it with the video and makes every word interactive. Save unfamiliar words to your personal dictionary and export the result as VTT, SRT or an MP4 with embedded subtitles.')}</p>
+        <p>{t('Читавук определяет язык речи, переводит текст на сербский, синхронизирует его с видео и делает каждое слово интерактивным. Во время просмотра незнакомое слово можно добавить в личный словарь, а готовый результат сохранить как VTT, SRT или MP4 со встроенными субтитрами.', 'Čitavuk detects the spoken language, translates the text into Serbian, synchronizes it with the video and makes every word interactive. Save unfamiliar words to your personal dictionary and export the result as VTT, SRT or an MP4 with embedded subtitles.', 'Čitavuk prepoznaje jezik govora, prevodi tekst na srpski, usklađuje ga sa videom i svaku reč čini interaktivnom. Nepoznate reči možete sačuvati u ličnom rečniku, a gotov rezultat izvesti kao VTT, SRT ili MP4 sa ugrađenim titlovima.')}</p>
       </section>
 
       <section className="seo-explainer" aria-labelledby="seo-explainer-title">
         <div className="section-heading"><div><span>{t('КАК ЭТО РАБОТАЕТ', 'HOW IT WORKS')}</span><h2 id="seo-explainer-title">{t('Сербские субтитры без ручной разметки', 'Serbian subtitles without manual timing')}</h2></div></div>
         <div className="seo-explainer-grid">
-          <article><h3>{t('Загрузите видео', 'Upload a video')}</h3><p>{t('Подойдут MP4, MOV, WEBM, MKV и другие распространённые форматы с русской, английской, сербской или другой речью.', 'Use MP4, MOV, WEBM, MKV and other common formats with English, Russian, Serbian or any other speech.')}</p></article>
-          <article><h3>{t('Получите сербский текст', 'Get Serbian text')}</h3><p>{t('Сервис распознаёт речь, переводит реплики на естественный сербский язык и синхронизирует каждую фразу с видео.', 'The service recognizes speech, translates it into natural Serbian and synchronizes every line with the video.')}</p></article>
-          <article><h3>{t('Смотрите или скачивайте', 'Watch or download')}</h3><p>{t('Используйте субтитры в плеере, сохраняйте SRT и VTT, создавайте MP4 или публикуйте разрешённое видео в открытой библиотеке.', 'Use subtitles in the player, save SRT or VTT, create an MP4, or publish permitted videos in the public library.')}</p></article>
+          <article><h3>{t('Загрузите видео', 'Upload a video')}</h3><p>{t('Подойдут MP4, MOV, WEBM, MKV и другие распространённые форматы с русской, английской, сербской или другой речью.', 'Use MP4, MOV, WEBM, MKV and other common formats with English, Russian, Serbian or any other speech.', 'Podržani su MP4, MOV, WEBM, MKV i drugi uobičajeni formati sa ruskim, engleskim, srpskim ili drugim govorom.')}</p></article>
+          <article><h3>{t('Получите сербский текст', 'Get Serbian text')}</h3><p>{t('Сервис распознаёт речь, переводит реплики на естественный сербский язык и синхронизирует каждую фразу с видео.', 'The service recognizes speech, translates it into natural Serbian and synchronizes every line with the video.', 'Servis prepoznaje govor, prevodi replike na prirodan srpski jezik i usklađuje svaku rečenicu sa videom.')}</p></article>
+          <article><h3>{t('Смотрите или скачивайте', 'Watch or download')}</h3><p>{t('Используйте субтитры в плеере, сохраняйте SRT и VTT, создавайте MP4 или публикуйте разрешённое видео в открытой библиотеке.', 'Use subtitles in the player, save SRT or VTT, create an MP4, or publish permitted videos in the public library.', 'Koristite titlove u plejeru, sačuvajte SRT ili VTT, napravite MP4 ili objavite dozvoljeni video u javnoj biblioteci.')}</p></article>
         </div>
       </section>
 
       {projects.length > 0 && (
         <section className="recent-section" id="my-videos">
-          <div className="section-heading"><div><span>{t('ВАША ПОЛКА', 'YOUR SHELF')}</span><h2>{t('Недавние видео', 'Recent videos')}</h2></div><small>{locale === 'en' ? `${projects.length} projects` : `${projects.length} ${pluralizeRu(projects.length, 'проект', 'проекта', 'проектов')}`}</small></div>
+          <div className="section-heading"><div><span>{t('ВАША ПОЛКА', 'YOUR SHELF')}</span><h2>{t('Недавние видео', 'Recent videos')}</h2></div><small>{locale === 'en' ? `${projects.length} projects` : locale === 'sr' ? `${projects.length} projekata` : `${projects.length} ${pluralizeRu(projects.length, 'проект', 'проекта', 'проектов')}`}</small></div>
           <div className="recent-list">
             {projects.slice(0, 4).map((project) => <RecentProject key={project.id} project={project} onOpen={onOpen} onDelete={onDelete} />)}
           </div>
@@ -843,7 +1011,7 @@ function VideoPanel({ project, videoUrl, videoRef, currentTime, onTime, activeSe
       {!project.transcript?.length && (
         <div className="transcribe-callout">
           <div className="callout-icon"><WandSparkles size={22} /></div>
-          <div><strong>{t('Видео готово к распознаванию', 'Video is ready for transcription')}</strong><span>{t('Читавук определит исходный язык, создаст сербские субтитры и сохранит точные таймкоды.', 'Čitavuk will detect the source language, create Serbian subtitles and preserve precise timestamps.')}</span></div>
+          <div><strong>{t('Видео готово к распознаванию', 'Video is ready for transcription')}</strong><span>{t('Читавук определит исходный язык, создаст сербские субтитры и сохранит точные таймкоды.', 'Čitavuk will detect the source language, create Serbian subtitles and preserve precise timestamps.', 'Čitavuk će prepoznati izvorni jezik, napraviti srpske titlove i sačuvati precizne vremenske oznake.')}</span></div>
           <button className="primary-button" onClick={() => onTranscribe()} disabled={Boolean(processing)}>
             {processing === 'transcribe' ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={17} />}
             {processing === 'transcribe' ? t('Слушаем речь…', 'Listening…') : t('Создать субтитры', 'Create subtitles')}
@@ -924,7 +1092,7 @@ function TranscriptPanel({ project, currentTime, onSeek, onAddWord, search, onSe
         <div className="empty-transcript">
           <div><FileText size={29} /></div>
           <strong>{t('Здесь появится текст', 'The transcript will appear here')}</strong>
-          <p>{t('После распознавания фразы синхронизируются с видео. Каждое слово станет интерактивным.', 'After transcription, every line will be synchronized with the video and every word will become interactive.')}</p>
+          <p>{t('После распознавания фразы синхронизируются с видео. Каждое слово станет интерактивным.', 'After transcription, every line will be synchronized with the video and every word will become interactive.', 'Posle prepoznavanja svaka rečenica će biti usklađena sa videom, a svaka reč će postati interaktivna.')}</p>
         </div>
       )}
     </section>
@@ -945,7 +1113,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
     <aside className="glossary-panel">
       <div className="glossary-top">
         <div className="dictionary-icon"><BookOpen size={21} /></div>
-        <div><span>{t('ЛИЧНЫЙ СЛОВАРЬ', 'PERSONAL DICTIONARY')}</span><h2>Читавук-речник <b>{project.glossary?.length || 0}</b></h2></div>
+        <div><span>{t('ЛИЧНЫЙ СЛОВАРЬ', 'PERSONAL DICTIONARY')}</span><h2>{t('Читавук-речник', 'Čitavuk Dictionary', 'Čitavuk-rečnik')} <b>{project.glossary?.length || 0}</b></h2></div>
       </div>
       {(project.glossary?.length || 0) > 0 && (
         <div className="glossary-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('Найти слово…', 'Find a word…')} /></div>
@@ -966,7 +1134,7 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                 <div className="word-translation-status is-error">{t('Перевод временно недоступен. Нажмите на слово ещё раз.', 'Translation is temporarily unavailable. Select the word again.')}</div>
               )}
               <label className="word-translation-field">
-                <span>РУССКИЙ</span>
+                <span>{t('РУССКИЙ', 'RUSSIAN', 'RUSKI')}</span>
                 <input
                   value={item.translationRu || item.translation || ''}
                   onChange={(event) => onChangeItem(item.id, { translationRu: event.target.value, translation: event.target.value })}
@@ -975,12 +1143,12 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                 />
               </label>
               <label className="word-translation-field">
-                <span>ENGLISH</span>
+                <span>{t('АНГЛИЙСКИЙ', 'ENGLISH', 'ENGLESKI')}</span>
                 <input
                   value={item.translationEn || ''}
                   onChange={(event) => onChangeItem(item.id, { translationEn: event.target.value })}
-                  placeholder="English translation"
-                  aria-label={t(`Английский перевод слова ${item.word}`, `English translation of ${item.word}`)}
+                  placeholder={t('Английский перевод', 'English translation', 'Engleski prevod')}
+                  aria-label={t(`Английский перевод слова ${item.word}`, `English translation of ${item.word}`, `Engleski prevod reči ${item.word}`)}
                 />
               </label>
               <textarea
@@ -990,14 +1158,14 @@ function GlossaryPanel({ project, onChangeItem, onRemove, onSeek, onBurn, proces
                 rows={1}
               />
             </div>
-            <button className="remove-word" onClick={() => onRemove(item.id)} aria-label={t(`Удалить ${item.word}`, `Remove ${item.word}`)}><X size={15} /></button>
+            <button className="remove-word" onClick={() => onRemove(item.id)} aria-label={t(`Удалить ${item.word}`, `Remove ${item.word}`, `Ukloni ${item.word}`)}><X size={15} /></button>
           </article>
         ))}
         {!glossary.length && (
           <div className="empty-glossary">
             <div className="empty-book"><BookOpen size={27} /><Plus size={14} /></div>
             <strong>{query ? t('Слово не найдено', 'Word not found') : t('Словарь пока пуст', 'The dictionary is empty')}</strong>
-            <p>{query ? t('Попробуйте другой запрос.', 'Try another search.') : t('Нажимайте на незнакомые слова в тексте — здесь появятся русский и английский переводы.', 'Select unfamiliar words in the transcript to see Russian and English translations here.')}</p>
+            <p>{query ? t('Попробуйте другой запрос.', 'Try another search.') : t('Нажимайте на незнакомые слова в тексте — здесь появятся русский и английский переводы.', 'Select unfamiliar words in the transcript to see Russian and English translations here.', 'Izaberite nepoznate reči u transkriptu da biste ovde videli ruski i engleski prevod.')}</p>
           </div>
         )}
       </div>
@@ -1100,7 +1268,7 @@ function Workspace({ project, videoUrl, videoFile, apiKey, onBack, onUpdate, onT
       <div className="project-bar">
         <button onClick={onBack}><ArrowLeft size={17} /> {t('К проектам', 'Back to projects')}</button>
         <div className="project-title"><span className="status-dot" /><strong>{project.name}</strong><span>{t('сохранено локально', 'saved locally')}</span></div>
-        <div className="project-meta"><Gauge size={15} /><span>{project.transcript?.length ? t(`${project.transcript.length} фрагментов`, `${project.transcript.length} segments`) : t('ожидает обработки', 'waiting to be processed')}</span></div>
+        <div className="project-meta"><Gauge size={15} /><span>{project.transcript?.length ? t(`${project.transcript.length} фрагментов`, `${project.transcript.length} segments`, `${project.transcript.length} segmenata`) : t('ожидает обработки', 'waiting to be processed')}</span></div>
       </div>
       <div className="workspace-grid">
         <div className="workspace-main">
@@ -1255,15 +1423,15 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
 
   if (selected) {
     const pagePath = `/subtitles/${selected.slug || videoSlug}`;
-    const pageDescription = selected.description || t(`${selected.title} — видео с синхронными сербскими субтитрами и текстом реплик.`, `${selected.title} — a video with synchronized Serbian subtitles and a full transcript.`);
+    const pageDescription = selected.description || t(`${selected.title} — видео с синхронными сербскими субтитрами и текстом реплик.`, `${selected.title} — a video with synchronized Serbian subtitles and a full transcript.`, `${selected.title} — video sa sinhronizovanim srpskim titlovima i potpunim transkriptom.`);
     const shortTitle = selected.title.length > 58 ? `${selected.title.slice(0, 57).trim()}…` : selected.title;
     return (
       <main className="public-library public-viewer">
-        <PageMetadata title={t(`${shortTitle} — сербские субтитры`, `${shortTitle} — Serbian subtitles`)} description={pageDescription} path={pagePath} />
+        <PageMetadata title={t(`${shortTitle} — сербские субтитры`, `${shortTitle} — Serbian subtitles`, `${shortTitle} — srpski titlovi`)} description={pageDescription} path={pagePath} />
         <div className="library-heading">
           <nav className="breadcrumbs" aria-label={t('Хлебные крошки', 'Breadcrumbs')}><a href="/" onClick={(event) => follow(event, '/')}>{t('Главная', 'Home')}</a><span>›</span><a href="/subtitles" onClick={(event) => follow(event, '/subtitles')}>{t('Библиотека', 'Library')}</a><span>›</span><strong>{selected.title}</strong></nav>
           <a className="library-back" href="/subtitles" onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> {t('Ко всем публикациям', 'All publications')}</a>
-          <span className="category-badge"><Tag size={13} /> {locale === 'en' ? PUBLIC_CATEGORY_EN[selected.category] || selected.category : selected.category}</span>
+          <span className="category-badge"><Tag size={13} /> {publicCategoryLabel(selected.category, locale)}</span>
           <h1>{selected.title}</h1>
           <p>{pageDescription}</p>
         </div>
@@ -1291,35 +1459,35 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
   const visibleItems = items;
   return (
     <main className="public-library">
-      <PageMetadata title={locale === 'en' ? `Videos with Serbian subtitles — public library${currentPage > 1 ? ` — page ${currentPage}` : ''}` : `${category !== 'все' ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Видео с сербскими субтитрами — публичная библиотека'}${currentPage > 1 ? ` — страница ${currentPage}` : ''}`} description={t('Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.', 'A public library of films, animation, blogs and learning videos with synchronized Serbian subtitles and full transcripts.')} path={libraryHref(currentPage, category)} />
+      <PageMetadata title={locale === 'en' ? `Videos with Serbian subtitles — public library${currentPage > 1 ? ` — page ${currentPage}` : ''}` : locale === 'sr' ? `Video-snimci sa srpskim titlovima — javna biblioteka${currentPage > 1 ? ` — stranica ${currentPage}` : ''}` : `${category !== 'все' ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Видео с сербскими субтитрами — публичная библиотека'}${currentPage > 1 ? ` — страница ${currentPage}` : ''}`} description={t('Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.', 'A public library of films, animation, blogs and learning videos with synchronized Serbian subtitles and full transcripts.', 'Javna biblioteka filmova, crtanih filmova, blogova i obrazovnih video-snimaka sa sinhronizovanim srpskim titlovima i transkriptima.')} path={libraryHref(currentPage, category)} />
       <PatternBand />
       <section className="library-intro">
         <div>
           <span className="panel-eyebrow">{t('АНОНИМНЫЕ ПУБЛИКАЦИИ', 'ANONYMOUS PUBLICATIONS')}</span>
           <h1>{t('Сербское видео с готовыми субтитрами', 'Videos with ready-made Serbian subtitles')}</h1>
-          <p>{t('Здесь собраны видео, которыми пользователи решили поделиться после распознавания речи. Имя автора не запрашивается и не публикуется, а категория помогает быстро найти фильм, мультфильм, блог или учебный материал.', 'These are videos users chose to share after transcription. Author names are not requested or published, and categories make films, animation, blogs and learning materials easy to find.')}</p>
+          <p>{t('Здесь собраны видео, которыми пользователи решили поделиться после распознавания речи. Имя автора не запрашивается и не публикуется, а категория помогает быстро найти фильм, мультфильм, блог или учебный материал.', 'These are videos users chose to share after transcription. Author names are not requested or published, and categories make films, animation, blogs and learning materials easy to find.', 'Ovde su video-snimci koje su korisnici odlučili da podele posle prepoznavanja govora. Ime autora se ne traži niti objavljuje, a kategorije pomažu da brzo pronađete film, crtani film, blog ili obrazovni sadržaj.')}</p>
         </div>
-        <img src="/assets/citavuk-guide.webp" alt={t('Читавук показывает публичную библиотеку', 'Čitavuk presents the public library')} />
+        <img src="/assets/citavuk-guide.webp" alt={t('Читавук показывает публичную библиотеку', 'Čitavuk presents the public library', 'Čitavuk predstavlja javnu biblioteku')} />
       </section>
       <nav className="category-filter" aria-label={t('Фильтр по категории', 'Filter by category')}>
-        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{locale === 'en' ? PUBLIC_CATEGORY_EN[item] : item}</a>)}
+        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{publicCategoryLabel(item, locale)}</a>)}
       </nav>
       {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>{t('Читавук открывает библиотеку…', 'Čitavuk is opening the library…')}</p></div>}
       {!loading && error && <div className="library-state library-state--error"><Globe2 size={28} /><p>{error}</p></div>}
       {!loading && !error && !configured && <div className="library-state"><Globe2 size={28} /><p>{t('Публичное хранилище ещё не подключено.', 'Public storage is not connected yet.')}</p></div>}
-      {!loading && !error && configured && visibleItems.length === 0 && <div className="library-state"><Film size={28} /><p>{category === 'все' ? t('Пока здесь нет видео. Первую публикацию можно создать из проекта с готовыми субтитрами.', 'There are no videos yet. You can publish the first one from a project with completed subtitles.') : t(`В категории «${category}» пока нет видео.`, `There are no videos in “${PUBLIC_CATEGORY_EN[category] || category}” yet.`)}</p></div>}
+      {!loading && !error && configured && visibleItems.length === 0 && <div className="library-state"><Film size={28} /><p>{category === 'все' ? t('Пока здесь нет видео. Первую публикацию можно создать из проекта с готовыми субтитрами.', 'There are no videos yet. You can publish the first one from a project with completed subtitles.', 'Ovde još nema video-snimaka. Prvi možete objaviti iz projekta sa gotovim titlovima.') : t(`В категории «${category}» пока нет видео.`, `There are no videos in “${PUBLIC_CATEGORY_EN[category] || category}” yet.`, `U kategoriji „${PUBLIC_CATEGORY_SR[category] || category}“ još nema video-snimaka.`)}</p></div>}
       {!loading && !error && visibleItems.length > 0 && (
         <section className="publication-grid">
           {visibleItems.map((item) => (
             <a className="publication-card" href={`/subtitles/${item.slug}`} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
               <div className={`publication-cover ${item.thumbnailUrl ? 'publication-cover--image' : ''}`}>
-                {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t(`Кадр из видео «${item.title}»`, `Frame from “${item.title}”`)} loading="lazy" /> : <Film size={32} />}
-                <span>{locale === 'en' ? PUBLIC_CATEGORY_EN[item.category] || item.category : item.category}</span>
+                {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t(`Кадр из видео «${item.title}»`, `Frame from “${item.title}”`, `Kadar iz videa „${item.title}“`)} loading="lazy" /> : <Film size={32} />}
+                <span>{publicCategoryLabel(item.category, locale)}</span>
               </div>
               <div className="publication-copy">
                 <h2>{item.title}</h2>
-                <p>{item.description || t('Сербское видео с распознанными субтитрами.', 'A video with recognized Serbian subtitles.')}</p>
-                <small>{locale === 'en' ? `${item.segmentsCount} segments` : `${item.segmentsCount} ${pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}`}, {formatClock(item.duration)}</small>
+                <p>{item.description || t('Сербское видео с распознанными субтитрами.', 'A video with recognized Serbian subtitles.', 'Video sa prepoznatim srpskim titlovima.')}</p>
+                <small>{locale === 'en' ? `${item.segmentsCount} segments` : locale === 'sr' ? `${item.segmentsCount} segmenata` : `${item.segmentsCount} ${pluralizeRu(item.segmentsCount, 'фрагмент', 'фрагмента', 'фрагментов')}`}, {formatClock(item.duration)}</small>
               </div>
               <ChevronRight size={19} />
             </a>
@@ -1329,7 +1497,7 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
       {!loading && !error && totalItems > 0 && (
         <nav className="pagination" aria-label={t('Страницы библиотеки', 'Library pages')}>
           <a className={currentPage <= 1 ? 'is-disabled' : ''} href={libraryHref(Math.max(1, currentPage - 1))} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>{t('Назад', 'Previous')}</a>
-          <span>{t(`Страница ${currentPage} из ${totalPages}`, `Page ${currentPage} of ${totalPages}`)}</span>
+          <span>{t(`Страница ${currentPage} из ${totalPages}`, `Page ${currentPage} of ${totalPages}`, `Stranica ${currentPage} od ${totalPages}`)}</span>
           <div>
             {Array.from({ length: totalPages }, (_, index) => index + 1).slice(Math.max(0, currentPage - 3), Math.max(5, currentPage + 2)).map((page) => (
               <a key={page} className={page === currentPage ? 'is-active' : ''} href={libraryHref(page)} onClick={(event) => follow(event, libraryHref(page))}>{page}</a>
@@ -1359,13 +1527,13 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
         <div className="modal-icon"><Globe2 size={24} /></div>
         <span className="modal-kicker">{t('ПУБЛИЧНАЯ БИБЛИОТЕКА', 'PUBLIC LIBRARY')}</span>
         <h2>{t('Опубликовать анонимно', 'Publish anonymously')}</h2>
-        <p>{t('Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Личные настройки и данные словаря не передаются и не публикуются.', 'The video and completed Serbian subtitles will become public. Personal settings and dictionary data are never uploaded or published.')}</p>
+        <p>{t('Видео и уже распознанные сербские субтитры станут доступны всем посетителям. Личные настройки и данные словаря не передаются и не публикуются.', 'The video and completed Serbian subtitles will become public. Personal settings and dictionary data are never uploaded or published.', 'Video i gotovi srpski titlovi postaće dostupni svim posetiocima. Lična podešavanja i podaci iz rečnika se ne prenose niti objavljuju.')}</p>
         <label>{t('НАЗВАНИЕ', 'TITLE')}
           <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} required />
         </label>
         <label>{t('КАТЕГОРИЯ', 'CATEGORY')}
           <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            {PUBLIC_CATEGORIES.slice(1).map((item) => <option key={item} value={item}>{locale === 'en' ? PUBLIC_CATEGORY_EN[item] : item}</option>)}
+            {PUBLIC_CATEGORIES.slice(1).map((item) => <option key={item} value={item}>{publicCategoryLabel(item, locale)}</option>)}
           </select>
         </label>
         <label>{t('ОПИСАНИЕ', 'DESCRIPTION')}
@@ -1373,7 +1541,7 @@ function PublishModal({ project, processing, onSubmit, onClose }) {
         </label>
         <label className="rights-confirmation">
           <input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} />
-          <span><ShieldCheck size={18} /> {t('Я подтверждаю, что имею право публично разместить это видео и понимаю, что публикация будет доступна по всему интернету.', 'I confirm that I have the right to publish this video and understand that it will be publicly available online.')}</span>
+          <span><ShieldCheck size={18} /> {t('Я подтверждаю, что имею право публично разместить это видео и понимаю, что публикация будет доступна по всему интернету.', 'I confirm that I have the right to publish this video and understand that it will be publicly available online.', 'Potvrđujem da imam pravo da javno objavim ovaj video i razumem da će publikacija biti dostupna na internetu.')}</span>
         </label>
         <button className="primary-button publish-submit" disabled={processing === 'publish' || !rightsConfirmed || title.trim().length < 2}>
           {processing === 'publish' ? <LoaderCircle className="spin" size={18} /> : <Globe2 size={18} />}
@@ -1394,12 +1562,12 @@ function SettingsModal({ value, onSave, onClose }) {
         <div className="modal-icon"><KeyRound size={24} /></div>
         <span className="modal-kicker">{t('НЕОБЯЗАТЕЛЬНО', 'OPTIONAL')}</span>
         <h2>{t('Свой ключ Groq API', 'Your Groq API key')}</h2>
-        <p>{t('По умолчанию распознавание и перевод работают на общих серверных моделях Polza. Личный Groq-ключ нужен только для использования собственных лимитов распознавания.', 'By default, transcription and translation use the shared Polza models on the server. A personal Groq key is only needed if you want to use your own transcription limits.')}</p>
-        <p className="key-guide-copy">{t('Чтобы подключить свой ключ, откройте Groq Console, нажмите Create API Key и вставьте сюда значение, которое начинается с gsk_. Ключ останется только в локальном хранилище этого браузера.', 'To connect your key, open Groq Console, select Create API Key, and paste the value starting with gsk_. It will stay in this browser’s local storage.')}</p>
+        <p>{t('По умолчанию распознавание и перевод работают на общих серверных моделях Polza. Личный Groq-ключ нужен только для использования собственных лимитов распознавания.', 'By default, transcription and translation use the shared Polza models on the server. A personal Groq key is only needed if you want to use your own transcription limits.', 'Prepoznavanje i prevođenje podrazumevano rade preko zajedničkih Polza modela na serveru. Lični Groq ključ je potreban samo ako želite da koristite sopstvene limite.')}</p>
+        <p className="key-guide-copy">{t('Чтобы подключить свой ключ, откройте Groq Console, нажмите Create API Key и вставьте сюда значение, которое начинается с gsk_. Ключ останется только в локальном хранилище этого браузера.', 'To connect your key, open Groq Console, select Create API Key, and paste the value starting with gsk_. It will stay in this browser’s local storage.', 'Da biste povezali svoj ključ, otvorite Groq Console, izaberite Create API Key i ovde unesite vrednost koja počinje sa gsk_. Ključ će ostati samo u lokalnom skladištu ovog pregledača.')}</p>
         <label>{t('ЛИЧНЫЙ GROQ API KEY', 'PERSONAL GROQ API KEY')}
           <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder={t('Оставьте пустым для общего сервера', 'Leave empty to use the shared server')} autoFocus />
         </label>
-        <div className="free-info"><Sparkles size={18} /><p>{t('Если удалить значение из поля и сохранить настройки, сайт снова автоматически переключится на общий сервер.', 'Clear the field and save to switch back to the shared server automatically.')}</p></div>
+        <div className="free-info"><Sparkles size={18} /><p>{t('Если удалить значение из поля и сохранить настройки, сайт снова автоматически переключится на общий сервер.', 'Clear the field and save to switch back to the shared server automatically.', 'Obrišite vrednost iz polja i sačuvajte podešavanja da biste se automatski vratili na zajednički server.')}</p></div>
         <div className="modal-actions">
           <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">{t('Получить личный ключ', 'Get a personal key')} <ChevronRight size={15} /></a>
           <button className="primary-button" onClick={() => onSave(key.trim())}>{key.trim() ? t('Использовать свой ключ', 'Use my key') : t('Использовать общий сервер', 'Use shared server')}</button>
@@ -1411,22 +1579,34 @@ function SettingsModal({ value, onSave, onClose }) {
 
 const WELCOME_STEPS = [
   {
-    title: ['Загрузите видео', 'Upload a video'],
-    text: ['Перетащите видео в область загрузки, выберите файл на устройстве или вставьте ссылку на YouTube.', 'Drop a video into the upload area, choose a file from your device, or paste a YouTube URL.'],
-    image: '/assets/onboarding-upload.png',
-    alt: ['Загрузка видео на главной странице Читавука', 'Video upload on the Čitavuk home page'],
+    title: ['Загрузите видео', 'Upload a video', 'Otpremite video'],
+    text: ['Перетащите видео в область загрузки, выберите файл на устройстве или вставьте ссылку на YouTube.', 'Drop a video into the upload area, choose a file from your device, or paste a YouTube URL.', 'Prevucite video u polje za otpremanje, izaberite datoteku sa uređaja ili unesite YouTube vezu.'],
+    images: {
+      ru: '/assets/onboarding-upload.png',
+      en: '/assets/onboarding-upload-en.png',
+      sr: '/assets/onboarding-upload-sr.png',
+    },
+    alt: ['Загрузка видео на главной странице Читавука', 'Video upload on the Čitavuk home page', 'Otpremanje videa na početnoj stranici Čitavuka'],
   },
   {
-    title: ['Создайте субтитры', 'Create subtitles'],
-    text: ['Откройте загруженное видео и нажмите «Создать субтитры». Читавук распознает речь и подготовит сербский текст.', 'Open the uploaded video and select “Create subtitles”. Čitavuk will recognize the speech and prepare Serbian text.'],
-    image: '/assets/onboarding-transcribe.png',
-    alt: ['Кнопка создания сербских субтитров в проекте', 'Create Serbian subtitles button'],
+    title: ['Создайте субтитры', 'Create subtitles', 'Napravite titlove'],
+    text: ['Откройте загруженное видео и нажмите «Создать субтитры». Читавук распознает речь и подготовит сербский текст.', 'Open the uploaded video and select “Create subtitles”. Čitavuk will recognize the speech and prepare Serbian text.', 'Otvorite otpremljeni video i izaberite „Napravi titlove“. Čitavuk će prepoznati govor i pripremiti srpski tekst.'],
+    images: {
+      ru: '/assets/onboarding-transcribe.png',
+      en: '/assets/onboarding-transcribe-en.png',
+      sr: '/assets/onboarding-transcribe-sr.png',
+    },
+    alt: ['Кнопка создания сербских субтитров в проекте', 'Create Serbian subtitles button', 'Dugme za pravljenje srpskih titlova'],
   },
   {
-    title: ['Смотрите и сохраняйте', 'Watch and save'],
-    text: ['Смотрите видео с субтитрами, нажимайте на незнакомые слова и сохраняйте результат в VTT, SRT или MP4.', 'Watch with subtitles, select unfamiliar words, and save the result as VTT, SRT or MP4.'],
-    image: '/assets/onboarding-result.png',
-    alt: ['Готовые субтитры и личный словарь в Читавуке', 'Completed subtitles and personal vocabulary in Čitavuk'],
+    title: ['Смотрите и сохраняйте', 'Watch and save', 'Gledajte i sačuvajte'],
+    text: ['Смотрите видео с субтитрами, нажимайте на незнакомые слова и сохраняйте результат в VTT, SRT или MP4.', 'Watch with subtitles, select unfamiliar words, and save the result as VTT, SRT or MP4.', 'Gledajte video sa titlovima, birajte nepoznate reči i sačuvajte rezultat kao VTT, SRT ili MP4.'],
+    images: {
+      ru: '/assets/onboarding-result.png',
+      en: '/assets/onboarding-result-en.png',
+      sr: '/assets/onboarding-result-sr.png',
+    },
+    alt: ['Готовые субтитры и личный словарь в Читавуке', 'Completed subtitles and personal vocabulary in Čitavuk', 'Gotovi titlovi i lični rečnik u Čitavuku'],
   },
 ];
 
@@ -1435,19 +1615,21 @@ function WelcomeModal({ onClose }) {
   const [step, setStep] = useState(0);
   const current = WELCOME_STEPS[step];
   const isLast = step === WELCOME_STEPS.length - 1;
+  const localeIndex = locale === 'en' ? 1 : locale === 'sr' ? 2 : 0;
+  const currentImage = current.images[locale] || current.images.en;
 
   return (
     <div className="modal-backdrop welcome-backdrop" onMouseDown={onClose}>
       <section className="welcome-modal" onMouseDown={(event) => event.stopPropagation()}>
         <button className="modal-close" onClick={onClose} aria-label={t('Закрыть инструкцию', 'Close guide')}><X size={20} /></button>
         <div className="welcome-shot-wrap">
-          <img key={current.image} src={current.image} alt={current.alt[locale === 'en' ? 1 : 0]} />
+          <img key={currentImage} src={currentImage} alt={current.alt[localeIndex]} />
           <span className="welcome-shot-counter">{step + 1} / {WELCOME_STEPS.length}</span>
         </div>
         <div className="welcome-content">
           <span className="modal-kicker">{t('КАК ЭТО РАБОТАЕТ', 'HOW IT WORKS')}</span>
-          <h2>{current.title[locale === 'en' ? 1 : 0]}</h2>
-          <p>{current.text[locale === 'en' ? 1 : 0]}</p>
+          <h2>{current.title[localeIndex]}</h2>
+          <p>{current.text[localeIndex]}</p>
           <div className="welcome-step-nav" aria-label={t('Шаги инструкции', 'Guide steps')}>
             {WELCOME_STEPS.map((item, index) => (
               <button
@@ -1455,11 +1637,11 @@ function WelcomeModal({ onClose }) {
                 type="button"
                 className={index === step ? 'active' : ''}
                 onClick={() => setStep(index)}
-                aria-label={t(`Шаг ${index + 1}: ${item.title[0]}`, `Step ${index + 1}: ${item.title[1]}`)}
+                aria-label={locale === 'sr' ? `Korak ${index + 1}: ${item.title[2]}` : t(`Шаг ${index + 1}: ${item.title[0]}`, `Step ${index + 1}: ${item.title[1]}`)}
                 aria-current={index === step ? 'step' : undefined}
               >
                 <span>{String(index + 1).padStart(2, '0')}</span>
-                {item.title[locale === 'en' ? 1 : 0]}
+                {item.title[localeIndex]}
               </button>
             ))}
           </div>
@@ -1475,8 +1657,100 @@ function WelcomeModal({ onClose }) {
   );
 }
 
+function SupportModal({ onClose, notify }) {
+  const { locale, t } = useUiLanguage();
+  const [message, setMessage] = useState('');
+  const [contact, setContact] = useState('');
+  const [attachment, setAttachment] = useState(null);
+  const [website, setWebsite] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError('');
+    if (message.trim().length < 10) {
+      setError(t('Опишите проблему чуть подробнее.', 'Please describe the issue in a little more detail.', 'Opišite problem malo detaljnije.'));
+      return;
+    }
+    if (attachment && attachment.size > 8 * 1024 * 1024) {
+      setError(t('Скриншот должен быть меньше 8 МБ.', 'The screenshot must be smaller than 8 MB.', 'Snimak ekrana mora biti manji od 8 MB.'));
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.append('_subject', `Čitavuk support · ${window.location.hostname}`);
+      formData.append('_template', 'table');
+      formData.append('_captcha', 'false');
+      formData.append('_honey', website);
+      formData.append('message', message.trim());
+      formData.append('reply_to', contact.trim() || 'not provided');
+      formData.append('page', window.location.href);
+      formData.append('interface_language', locale);
+      formData.append('browser', navigator.userAgent);
+      if (attachment) formData.append('attachment', attachment, attachment.name);
+      const response = await fetch('https://formsubmit.co/ajax/deniskornilov12@gmail.com', {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+        body: formData,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || t('Не удалось отправить сообщение.', 'The message could not be sent.', 'Poruka nije poslata.'));
+      }
+      notify(t('Сообщение отправлено в техническую поддержку', 'Your message was sent to technical support', 'Poruka je poslata tehničkoj podršci'));
+      onClose();
+    } catch (submissionError) {
+      setError(submissionError.message || t('Не удалось отправить сообщение.', 'The message could not be sent.', 'Poruka nije poslata.'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop support-backdrop" onMouseDown={onClose}>
+      <section className="support-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="modal-close" onClick={onClose} aria-label={t('Закрыть техническую поддержку', 'Close technical support', 'Zatvori tehničku podršku')}><X size={20} /></button>
+        <span className="modal-kicker">{t('ТЕХНИЧЕСКАЯ ПОДДЕРЖКА', 'TECHNICAL SUPPORT', 'TEHNIČKA PODRŠKA')}</span>
+        <h2>{t('Сообщить о проблеме', 'Report a problem', 'Prijavite problem')}</h2>
+        <p>{t('Опишите, что произошло. Адрес страницы и сведения о браузере добавятся автоматически.', 'Tell us what happened. The page address and browser details will be included automatically.', 'Opišite šta se dogodilo. Adresa stranice i podaci o pregledaču biće dodati automatski.')}</p>
+        <form onSubmit={submit}>
+          <label>
+            {t('Что произошло', 'What happened', 'Šta se dogodilo')}
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={6} placeholder={t('Опишите действия и текст ошибки', 'Describe what you did and include any error message', 'Opišite svoje radnje i tekst greške')} autoFocus required />
+          </label>
+          <label>
+            {t('Ваш email или Telegram для ответа', 'Your email or Telegram for a reply', 'Vaš email ili Telegram za odgovor')}
+            <input value={contact} onChange={(event) => setContact(event.target.value)} placeholder={t('Необязательно', 'Optional', 'Neobavezno')} />
+          </label>
+          <label className="support-file">
+            <span><Paperclip size={17} /> {t('Приложить скриншот', 'Attach a screenshot', 'Priložite snimak ekrana')}</span>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={(event) => setAttachment(event.target.files?.[0] || null)}
+            />
+            <small>{attachment ? attachment.name : t('PNG, JPG или WEBP до 8 МБ', 'PNG, JPG or WEBP up to 8 MB', 'PNG, JPG ili WEBP do 8 MB')}</small>
+          </label>
+          <input className="support-honeypot" value={website} onChange={(event) => setWebsite(event.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" />
+          {error && <div className="support-error" role="alert">{error}</div>}
+          <button className="primary-button support-submit" disabled={submitting}>
+            {submitting ? <LoaderCircle className="spin" size={18} /> : <Mail size={18} />}
+            {submitting ? t('Отправляем…', 'Sending…', 'Šaljemo…') : t('Отправить в поддержку', 'Send to support', 'Pošalji podršci')}
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function remainingLabel(seconds, locale = 'ru') {
   if (!Number.isFinite(seconds)) return null;
+  if (locale === 'sr') {
+    if (seconds < 60) return `preostalo je oko ${Math.max(1, Math.round(seconds))} sek`;
+    return `preostalo je oko ${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} sek`;
+  }
   if (seconds < 60) return locale === 'en' ? `about ${Math.max(1, Math.round(seconds))} sec left` : `осталось примерно ${Math.max(1, Math.round(seconds))} сек`;
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.round(seconds % 60);
@@ -1484,7 +1758,33 @@ function remainingLabel(seconds, locale = 'ru') {
 }
 
 function localizedProgressStage(stage, locale) {
-  if (locale !== 'en' || !stage) return stage;
+  if (!stage || locale === 'ru') return stage;
+  if (locale === 'sr') {
+    const dynamicTranslations = [
+      [/^Переводим субтитры на сербский \((.+)\)$/, 'Prevodimo titlove na srpski ($1)'],
+      [/^Проверяем пропуск в субтитрах \((.+)\)$/, 'Proveravamo prazninu u titlovima ($1)'],
+      [/^Передаём видео частями: (.+)$/, 'Otpremamo video u delovima: $1'],
+    ];
+    for (const [pattern, translation] of dynamicTranslations) {
+      if (pattern.test(stage)) return stage.replace(pattern, translation);
+    }
+    return {
+      'Подготавливаем видео к загрузке': 'Pripremamo video za otpremanje',
+      'Загружаем видео на сервер': 'Otpremamo video na server',
+      'Получаем видео от пользователя': 'Primamo video',
+      'Видео загружено на сервер': 'Video je otpremljen',
+      'Извлекаем и сжимаем аудио': 'Izdvajamo i sažimamo zvuk',
+      'Проверяем аудиодорожку': 'Proveravamo audio-zapis',
+      'Aiesa распознаёт речь, Whisper синхронизирует таймкоды': 'Aiesa prepoznaje govor, Whisper usklađuje vreme',
+      'Groq определяет язык и распознаёт речь': 'Groq prepoznaje jezik i govor',
+      'Проверяем видео на пропуски в субтитрах': 'Proveravamo da li nedostaju titlovi',
+      'Ждём доступности модели перевода': 'Čekamo model za prevođenje',
+      'Сохраняем фрагменты и таймкоды': 'Čuvamo segmente i vremenske oznake',
+      'Субтитры готовы': 'Titlovi su spremni',
+      'Распознавание остановлено': 'Obrada je zaustavljena',
+      'Восстанавливаем фоновую задачу': 'Obnavljamo pozadinski zadatak',
+    }[stage] || stage;
+  }
   const dynamicTranslations = [
     [/^Переводим субтитры на сербский \((.+)\)$/, 'Translating subtitles into Serbian ($1)'],
     [/^Проверяем пропуск в субтитрах \((.+)\)$/, 'Checking a subtitle gap ($1)'],
@@ -1515,7 +1815,7 @@ function ProcessingBanner({ kind, progress }) {
   const { locale, t } = useUiLanguage();
   if (!kind) return null;
   const title = kind === 'burn' ? t('Создаём видео с субтитрами', 'Creating a subtitled video') : kind === 'publish' ? t('Публикуем видео анонимно', 'Publishing anonymously') : kind === 'youtube' ? t('Скачиваем видео с YouTube', 'Downloading from YouTube') : t('Готовим сербские субтитры', 'Creating Serbian subtitles');
-  const copy = kind === 'burn' ? t('Это может занять несколько минут…', 'This may take a few minutes…') : kind === 'publish' ? t('Передаём видео и готовые субтитры в публичное хранилище…', 'Uploading the video and subtitles to public storage…') : kind === 'youtube' ? t('Загружаем ролик на сервер и передаём его в браузер…', 'Downloading the video on the server…') : t('Извлекаем звук и расставляем таймкоды…', 'Extracting audio and aligning timestamps…');
+  const copy = kind === 'burn' ? t('Это может занять несколько минут…', 'This may take a few minutes…') : kind === 'publish' ? t('Передаём видео и готовые субтитры в публичное хранилище…', 'Uploading the video and subtitles to public storage…', 'Otpremamo video i gotove titlove u javno skladište…') : kind === 'youtube' ? t('Загружаем ролик на сервер и передаём его в браузер…', 'Downloading the video on the server…', 'Preuzimamo video na server i šaljemo ga pregledaču…') : t('Извлекаем звук и расставляем таймкоды…', 'Extracting audio and aligning timestamps…', 'Izdvajamo zvuk i usklađujemo vremenske oznake…');
   if ((kind === 'transcribe' || kind === 'youtube' || kind === 'publish' || kind === 'burn') && progress) {
     const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
     const remaining = remainingLabel(progress.etaSeconds, locale);
@@ -1528,7 +1828,7 @@ function ProcessingBanner({ kind, progress }) {
         <div className="processing-progress-track"><span style={{ width: `${percent}%` }} /></div>
         <div className="processing-progress-copy">
           <span>{localizedProgressStage(progress.stage, locale) || copy}</span>
-          <small>{remaining || (percent >= 60 && percent < 99 ? t('Сервис отвечает дольше обычного, задача продолжает выполняться', 'The service is taking longer than usual, but the job is still running') : t('оцениваем оставшееся время', 'estimating the remaining time'))}</small>
+          <small>{remaining || (percent >= 60 && percent < 99 ? t('Сервис отвечает дольше обычного, задача продолжает выполняться', 'The service is taking longer than usual, but the job is still running', 'Servisu je potrebno više vremena nego obično, ali obrada se nastavlja') : t('оцениваем оставшееся время', 'estimating the remaining time'))}</small>
         </div>
       </div>
     );
@@ -1548,7 +1848,7 @@ function TelegramNotice({ onClose }) {
       <div className="telegram-notice-icon"><Send size={19} strokeWidth={1.8} /></div>
       <div className="telegram-notice-copy">
         <strong>{t('Читавук в Telegram', 'Čitavuk on Telegram')}</strong>
-        <p>{t('Следите за обновлениями сайта и находите новые материалы для изучения сербского и хорватского.', 'Follow site updates and discover new materials for learning Serbian and Croatian.')}</p>
+        <p>{t('Следите за обновлениями сайта и находите новые материалы для изучения сербского и хорватского.', 'Follow site updates and discover new materials for learning Serbian and Croatian.', 'Pratite novosti na sajtu i pronađite nove materijale za učenje srpskog i hrvatskog jezika.')}</p>
         <a href="https://t.me/citavuk" target="_blank" rel="noreferrer">{t('Открыть канал', 'Open the channel')} <ChevronRight size={14} /></a>
       </div>
       <button type="button" onClick={onClose} aria-label={t('Закрыть сообщение о Telegram-канале', 'Close Telegram notice')}><X size={16} /></button>
@@ -1558,7 +1858,7 @@ function TelegramNotice({ onClose }) {
 }
 
 export default function App() {
-  const [locale, setLocale] = useState(initialLocale);
+  const [locale, setLocaleState] = useState(initialLocale);
   const [projects, setProjects] = useState(loadProjects);
   const [activeId, setActiveId] = useState(null);
   const [page, setPage] = useState(() => readBrowserRoute().page);
@@ -1568,7 +1868,8 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState(null);
   const [apiKey, setApiKey] = useState(loadApiKey);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [welcomeOpen, setWelcomeOpen] = useState(() => sessionStorage.getItem('recnik-welcome-seen') !== '1');
+  const [welcomeOpen, setWelcomeOpen] = useState(shouldShowWelcome);
+  const [supportOpen, setSupportOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [processing, setProcessing] = useState(null);
@@ -1581,11 +1882,36 @@ export default function App() {
   ));
   const activeProject = projects.find((project) => project.id === activeId);
 
+  const setLocale = (nextLocale) => {
+    if (!['en', 'ru', 'sr'].includes(nextLocale)) return;
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, nextLocale);
+    setLocaleState(nextLocale);
+  };
+
   useEffect(() => {
-    localStorage.setItem(LANGUAGE_STORAGE_KEY, locale);
+    if (hasExplicitLocale()) return undefined;
+    let cancelled = false;
+    const controller = new AbortController();
+    fetch(apiUrl('/api/locale'), { signal: controller.signal, cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('locale lookup failed')))
+      .then((payload) => {
+        if (!cancelled && ['en', 'ru', 'sr'].includes(payload.locale)) setLocaleState(payload.locale);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const browserLanguage = String(navigator.language || '').toLowerCase();
+        setLocaleState(/^(sr|hr|bs)/.test(browserLanguage) ? 'sr' : browserLanguage.startsWith('ru') ? 'ru' : 'en');
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     document.documentElement.lang = locale;
     const url = new URL(window.location.href);
-    if (locale === 'en') url.searchParams.set('lang', 'en');
+    if (locale === 'en' || locale === 'sr') url.searchParams.set('lang', locale);
     else url.searchParams.delete('lang');
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
   }, [locale]);
@@ -1629,10 +1955,10 @@ export default function App() {
       const enabled = Boolean(subscription);
       setNotificationsEnabled(enabled);
       notify(enabled
-        ? (locale === 'en' ? 'Notifications are enabled' : 'Уведомления включены')
-        : (locale === 'en' ? 'Notifications were not enabled' : 'Уведомления не включены'));
+        ? (locale === 'en' ? 'Notifications are enabled' : locale === 'sr' ? 'Obaveštenja su uključena' : 'Уведомления включены')
+        : (locale === 'en' ? 'Notifications were not enabled' : locale === 'sr' ? 'Obaveštenja nisu uključena' : 'Уведомления не включены'));
     } catch {
-      notify(locale === 'en' ? 'The browser could not enable notifications' : 'Браузер не смог включить уведомления');
+      notify(locale === 'en' ? 'The browser could not enable notifications' : locale === 'sr' ? 'Pregledač nije mogao da uključi obaveštenja' : 'Браузер не смог включить уведомления');
     }
   };
 
@@ -1770,15 +2096,15 @@ export default function App() {
     }
     let cancelled = false;
     setProcessing('transcribe');
-    setTranscriptionProgress({ percent: 20, stage: locale === 'en' ? 'Restoring the background job' : 'Восстанавливаем фоновую задачу', etaSeconds: null });
+    setTranscriptionProgress({ percent: 20, stage: locale === 'en' ? 'Restoring the background job' : locale === 'sr' ? 'Obnavljamo pozadinski zadatak' : 'Восстанавливаем фоновую задачу', etaSeconds: null });
     waitForTranscriptionJob(pending.jobId, setTranscriptionProgress)
       .then((payload) => {
         if (cancelled) return;
         const transcript = normalizeTranscription(payload);
-        if (!transcript.length) throw new Error(locale === 'en' ? 'No speech was found in the video.' : 'Речь в видео не найдена.');
+        if (!transcript.length) throw new Error(locale === 'en' ? 'No speech was found in the video.' : locale === 'sr' ? 'U videu nije pronađen govor.' : 'Речь в видео не найдена.');
         updateProject({ transcript }, pending.projectId);
         localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
-        notify(locale === 'en' ? `Ready: ${transcript.length} segments` : `Готово: ${transcript.length} фрагментов`);
+        notify(locale === 'en' ? `Ready: ${transcript.length} segments` : locale === 'sr' ? `Spremno: ${transcript.length} segmenata` : `Готово: ${transcript.length} фрагментов`);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -1839,7 +2165,7 @@ export default function App() {
       setTranscriptionProgress({ percent: 100, stage: 'Субтитры готовы', etaSeconds: 0 });
       updateProject({ transcript }, projectId);
       localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
-      notify(locale === 'en' ? `Ready: ${transcript.length} segments` : `Готово: ${transcript.length} фрагментов`);
+      notify(locale === 'en' ? `Ready: ${transcript.length} segments` : locale === 'sr' ? `Spremno: ${transcript.length} segmenata` : `Готово: ${transcript.length} фрагментов`);
       await wait(700);
     } catch (error) {
       if (error.code || error.status === 404) localStorage.removeItem(PENDING_TRANSCRIPTION_KEY);
@@ -1960,14 +2286,16 @@ export default function App() {
     setSettingsOpen(false);
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
+    localStorage.setItem(WELCOME_STORAGE_KEY, '1');
     notify(key
-      ? (locale === 'en' ? 'Your Groq key is active' : 'Используется ваш ключ Groq')
-      : (locale === 'en' ? 'The shared server is active' : 'Используется общий сервер'));
+      ? (locale === 'en' ? 'Your Groq key is active' : locale === 'sr' ? 'Koristi se vaš Groq ključ' : 'Используется ваш ключ Groq')
+      : (locale === 'en' ? 'The shared server is active' : locale === 'sr' ? 'Koristi se zajednički server' : 'Используется общий сервер'));
   };
 
   const closeWelcome = () => {
     setWelcomeOpen(false);
     sessionStorage.setItem('recnik-welcome-seen', '1');
+    localStorage.setItem(WELCOME_STORAGE_KEY, '1');
   };
 
   const goHome = () => {
@@ -2024,14 +2352,20 @@ export default function App() {
         />
       )}
       <footer>
-        <span>ЧИТАВУК-РЕЧНИК, 2026</span>
-        <span>{locale === 'en' ? 'Created by Denis Kornilov with Gpt Sol 5.6' : 'Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)'}</span>
-        <nav aria-label={locale === 'en' ? 'Footer navigation' : 'Навигация в подвале'}><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>{locale === 'en' ? 'Create subtitles' : 'Создать субтитры'}</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>{locale === 'en' ? 'Library' : 'Библиотека'}</a><a href="/sitemap.xml">{locale === 'en' ? 'Sitemap' : 'Карта сайта'}</a></nav>
-        <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">{locale === 'en' ? 'Questions: @ivanlindgren' : 'По вопросам: @ivanlindgren'}</a>
-        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> {locale === 'en' ? 'How it works' : 'Как это работает'}</button>
+        <span>{locale === 'en' ? 'ČITAVUK DICTIONARY, 2026' : locale === 'sr' ? 'ČITAVUK-REČNIK, 2026' : 'ЧИТАВУК-РЕЧНИК, 2026'}</span>
+        <span>{locale === 'en' ? 'Created by Denis Kornilov with Gpt Sol 5.6' : locale === 'sr' ? 'Autor sajta: Denis Kornilov uz Gpt Sol 5.6' : 'Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)'}</span>
+        <nav aria-label={locale === 'en' ? 'Footer navigation' : locale === 'sr' ? 'Navigacija u podnožju' : 'Навигация в подвале'}><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>{locale === 'en' ? 'Create subtitles' : locale === 'sr' ? 'Napravi titlove' : 'Создать субтитры'}</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>{locale === 'en' ? 'Library' : locale === 'sr' ? 'Biblioteka' : 'Библиотека'}</a><a href="/sitemap.xml">{locale === 'en' ? 'Sitemap' : locale === 'sr' ? 'Mapa sajta' : 'Карта сайта'}</a></nav>
+        <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">{locale === 'en' ? 'Questions: @ivanlindgren' : locale === 'sr' ? 'Pitanja: @ivanlindgren' : 'По вопросам: @ivanlindgren'}</a>
+        <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> {locale === 'en' ? 'How it works' : locale === 'sr' ? 'Kako radi' : 'Как это работает'}</button>
+        <button onClick={() => setSupportOpen(true)}><LifeBuoy size={14} /> {locale === 'en' ? 'Technical support' : locale === 'sr' ? 'Tehnička podrška' : 'Техническая поддержка'}</button>
       </footer>
+      <button className="support-fab" type="button" onClick={() => setSupportOpen(true)} aria-label={locale === 'en' ? 'Open technical support' : locale === 'sr' ? 'Otvorite tehničku podršku' : 'Открыть техническую поддержку'}>
+        <LifeBuoy size={19} />
+        <span>{locale === 'en' ? 'Support' : locale === 'sr' ? 'Podrška' : 'Поддержка'}</span>
+      </button>
       {settingsOpen && <SettingsModal value={apiKey} onSave={saveKey} onClose={() => setSettingsOpen(false)} />}
       {welcomeOpen && <WelcomeModal onClose={closeWelcome} />}
+      {supportOpen && <SupportModal onClose={() => setSupportOpen(false)} notify={notify} />}
       {publishOpen && activeProject && <PublishModal project={activeProject} processing={processing} onSubmit={publishVideo} onClose={() => setPublishOpen(false)} />}
       <ProcessingBanner kind={processing} progress={transcriptionProgress} />
       {telegramNoticeOpen && <TelegramNotice onClose={() => setTelegramNoticeOpen(false)} />}
