@@ -216,9 +216,28 @@ function publicCategoryLabel(category, locale) {
   return category;
 }
 
+function splitLocalizedPath(pathname = window.location.pathname) {
+  const normalized = `/${String(pathname || '/').replace(/^\/+|\/+$/g, '')}`.replace(/^\/$/, '/');
+  const match = normalized.match(/^\/(en|sr)(?=\/|$)(.*)$/i);
+  const locale = match ? match[1].toLowerCase() : null;
+  const routePath = match ? (match[2] || '/') : normalized;
+  return { locale, routePath: routePath === '' ? '/' : routePath };
+}
+
+function localizedSitePath(value = '/', locale = 'ru') {
+  const url = new URL(value, 'https://serbiansubtitles.online');
+  const { routePath } = splitLocalizedPath(url.pathname);
+  const pathname = locale === 'ru'
+    ? routePath
+    : `/${locale}${routePath === '/' ? '/' : routePath}`;
+  return `${pathname}${url.search}${url.hash}`;
+}
+
 function initialLocale() {
   const queryLocale = new URLSearchParams(window.location.search).get('lang');
   if (['en', 'ru', 'sr'].includes(queryLocale)) return queryLocale;
+  const pathLocale = splitLocalizedPath().locale;
+  if (pathLocale) return pathLocale;
   const savedLocale = localStorage.getItem(LANGUAGE_STORAGE_KEY);
   return ['en', 'ru', 'sr'].includes(savedLocale) ? savedLocale : 'en';
 }
@@ -226,7 +245,9 @@ function initialLocale() {
 function hasExplicitLocale() {
   const queryLocale = new URLSearchParams(window.location.search).get('lang');
   const savedLocale = localStorage.getItem(LANGUAGE_STORAGE_KEY);
-  return ['en', 'ru', 'sr'].includes(queryLocale) || ['en', 'ru', 'sr'].includes(savedLocale);
+  return Boolean(splitLocalizedPath().locale)
+    || ['en', 'ru', 'sr'].includes(queryLocale)
+    || ['en', 'ru', 'sr'].includes(savedLocale);
 }
 
 function shouldShowWelcome() {
@@ -239,19 +260,19 @@ function shouldShowWelcome() {
 }
 
 function readBrowserRoute() {
-  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  const { locale, routePath } = splitLocalizedPath();
+  const pathname = routePath.replace(/\/+$/, '') || '/';
   const videoMatch = pathname.match(/^\/subtitles\/([a-z0-9-]+)$/i);
-  if (videoMatch) return { page: 'library', videoSlug: videoMatch[1] };
-  if (pathname === '/subtitles' || pathname === '/library') return { page: 'library', videoSlug: null };
-  return { page: 'landing', videoSlug: null };
+  if (videoMatch) return { page: 'library', videoSlug: videoMatch[1], locale };
+  if (pathname === '/subtitles' || pathname === '/library') return { page: 'library', videoSlug: null, locale };
+  return { page: 'landing', videoSlug: null, locale };
 }
 
 function PageMetadata({ title, description, path = '/' }) {
   const { locale } = useUiLanguage();
   const resolvedTitle = title || (locale === 'en' ? ENGLISH_PAGE_TITLE : locale === 'sr' ? SERBIAN_PAGE_TITLE : DEFAULT_PAGE_TITLE);
   const resolvedDescription = description || (locale === 'en' ? ENGLISH_PAGE_DESCRIPTION : locale === 'sr' ? SERBIAN_PAGE_DESCRIPTION : DEFAULT_PAGE_DESCRIPTION);
-  const separator = path.includes('?') ? '&' : '?';
-  const localizedPath = locale === 'ru' ? path : `${path}${separator}lang=${locale}`;
+  const localizedPath = localizedSitePath(path, locale);
   useEffect(() => {
     document.title = resolvedTitle;
     document.documentElement.lang = locale;
@@ -261,9 +282,9 @@ function PageMetadata({ title, description, path = '/' }) {
     if (canonical) canonical.setAttribute('href', `https://serbiansubtitles.online${localizedPath}`);
     document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => {
       const language = link.getAttribute('hreflang');
-      const languagePath = language === 'en' || language === 'sr'
-        ? `${path}${separator}lang=${language}`
-        : path;
+      const languagePath = language === 'x-default'
+        ? localizedSitePath(path, 'en')
+        : localizedSitePath(path, ['en', 'sr'].includes(language) ? language : 'ru');
       link.setAttribute('href', `https://serbiansubtitles.online${languagePath}`);
     });
     const ogTitle = document.querySelector('meta[property="og:title"]');
@@ -280,7 +301,7 @@ function PageMetadata({ title, description, path = '/' }) {
     if (ogSiteName) ogSiteName.setAttribute('content', locale === 'en' ? 'Čitavuk Dictionary' : locale === 'sr' ? 'Čitavuk-rečnik' : 'Читавук-речник');
     if (twitterTitle) twitterTitle.setAttribute('content', resolvedTitle);
     if (twitterDescription) twitterDescription.setAttribute('content', resolvedDescription);
-  }, [locale, localizedPath, path, resolvedDescription, resolvedTitle, separator]);
+  }, [locale, localizedPath, path, resolvedDescription, resolvedTitle]);
   return null;
 }
 
@@ -731,14 +752,14 @@ function Header({ inProject, inLibrary, onHome, onLibrary, onSettings, onNotific
   };
   return (
     <header className="site-header">
-      <a className="brand" href="/" onClick={(event) => follow(event, onHome)} aria-label={t('На главную', 'Home')}>
+      <a className="brand" href={localizedSitePath('/', locale)} onClick={(event) => follow(event, onHome)} aria-label={t('На главную', 'Home')}>
         <BrandMark />
         <span className="brand-copy"><strong>{t('ЧИТАВУК-РЕЧНИК', 'ČITAVUK DICTIONARY', 'ČITAVUK-REČNIK')}</strong><small>{t('сербские субтитры и видеословарь', 'Serbian subtitles and video dictionary')}</small></span>
       </a>
       <div className="header-actions">
         <nav className="site-nav" aria-label={t('Основная навигация', 'Main navigation')}>
-          <a className={!inLibrary ? 'is-active' : ''} href="/" onClick={(event) => follow(event, onHome)}><Upload size={17} /><span>{inProject ? t('Мои видео', 'My videos') : t('Создать субтитры', 'Create subtitles')}</span></a>
-          <a className={inLibrary ? 'is-active' : ''} href="/subtitles" onClick={(event) => follow(event, onLibrary)}><Globe2 size={17} /><span>{t('Библиотека', 'Library')}</span></a>
+          <a className={!inLibrary ? 'is-active' : ''} href={localizedSitePath('/', locale)} onClick={(event) => follow(event, onHome)}><Upload size={17} /><span>{inProject ? t('Мои видео', 'My videos') : t('Создать субтитры', 'Create subtitles')}</span></a>
+          <a className={inLibrary ? 'is-active' : ''} href={localizedSitePath('/subtitles', locale)} onClick={(event) => follow(event, onLibrary)}><Globe2 size={17} /><span>{t('Библиотека', 'Library')}</span></a>
         </nav>
         <div className="language-switch" role="group" aria-label={t('Язык сайта', 'Site language')}>
           <button className={locale === 'ru' ? 'is-active' : ''} onClick={() => setLocale('ru')} lang="ru">RU</button>
@@ -1429,8 +1450,8 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
       <main className="public-library public-viewer">
         <PageMetadata title={t(`${shortTitle} — сербские субтитры`, `${shortTitle} — Serbian subtitles`, `${shortTitle} — srpski titlovi`)} description={pageDescription} path={pagePath} />
         <div className="library-heading">
-          <nav className="breadcrumbs" aria-label={t('Хлебные крошки', 'Breadcrumbs')}><a href="/" onClick={(event) => follow(event, '/')}>{t('Главная', 'Home')}</a><span>›</span><a href="/subtitles" onClick={(event) => follow(event, '/subtitles')}>{t('Библиотека', 'Library')}</a><span>›</span><strong>{selected.title}</strong></nav>
-          <a className="library-back" href="/subtitles" onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> {t('Ко всем публикациям', 'All publications')}</a>
+          <nav className="breadcrumbs" aria-label={t('Хлебные крошки', 'Breadcrumbs')}><a href={localizedSitePath('/', locale)} onClick={(event) => follow(event, '/')}>{t('Главная', 'Home')}</a><span>›</span><a href={localizedSitePath('/subtitles', locale)} onClick={(event) => follow(event, '/subtitles')}>{t('Библиотека', 'Library')}</a><span>›</span><strong>{selected.title}</strong></nav>
+          <a className="library-back" href={localizedSitePath('/subtitles', locale)} onClick={(event) => follow(event, '/subtitles')}><ArrowLeft size={17} /> {t('Ко всем публикациям', 'All publications')}</a>
           <span className="category-badge"><Tag size={13} /> {publicCategoryLabel(selected.category, locale)}</span>
           <h1>{selected.title}</h1>
           <p>{pageDescription}</p>
@@ -1470,7 +1491,7 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
         <img src="/assets/citavuk-guide.webp" alt={t('Читавук показывает публичную библиотеку', 'Čitavuk presents the public library', 'Čitavuk predstavlja javnu biblioteku')} />
       </section>
       <nav className="category-filter" aria-label={t('Фильтр по категории', 'Filter by category')}>
-        {PUBLIC_CATEGORIES.map((item) => <a href={libraryHref(1, item)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{publicCategoryLabel(item, locale)}</a>)}
+        {PUBLIC_CATEGORIES.map((item) => <a href={localizedSitePath(libraryHref(1, item), locale)} key={item} className={category === item ? 'is-active' : ''} onClick={(event) => follow(event, libraryHref(1, item))}>{publicCategoryLabel(item, locale)}</a>)}
       </nav>
       {loading && <div className="library-state"><LoaderCircle className="spin" size={24} /><p>{t('Читавук открывает библиотеку…', 'Čitavuk is opening the library…')}</p></div>}
       {!loading && error && <div className="library-state library-state--error"><Globe2 size={28} /><p>{error}</p></div>}
@@ -1479,7 +1500,7 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
       {!loading && !error && visibleItems.length > 0 && (
         <section className="publication-grid">
           {visibleItems.map((item) => (
-            <a className="publication-card" href={`/subtitles/${item.slug}`} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
+            <a className="publication-card" href={localizedSitePath(`/subtitles/${item.slug}`, locale)} key={item.id} onClick={(event) => follow(event, `/subtitles/${item.slug}`)}>
               <div className={`publication-cover ${item.thumbnailUrl ? 'publication-cover--image' : ''}`}>
                 {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={t(`Кадр из видео «${item.title}»`, `Frame from “${item.title}”`, `Kadar iz videa „${item.title}“`)} loading="lazy" /> : <Film size={32} />}
                 <span>{publicCategoryLabel(item.category, locale)}</span>
@@ -1496,14 +1517,14 @@ function PublicLibrary({ refreshToken, notify, videoSlug, locationKey, onNavigat
       )}
       {!loading && !error && totalItems > 0 && (
         <nav className="pagination" aria-label={t('Страницы библиотеки', 'Library pages')}>
-          <a className={currentPage <= 1 ? 'is-disabled' : ''} href={libraryHref(Math.max(1, currentPage - 1))} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>{t('Назад', 'Previous')}</a>
+          <a className={currentPage <= 1 ? 'is-disabled' : ''} href={localizedSitePath(libraryHref(Math.max(1, currentPage - 1)), locale)} onClick={(event) => currentPage > 1 && follow(event, libraryHref(currentPage - 1))}>{t('Назад', 'Previous')}</a>
           <span>{t(`Страница ${currentPage} из ${totalPages}`, `Page ${currentPage} of ${totalPages}`, `Stranica ${currentPage} od ${totalPages}`)}</span>
           <div>
             {Array.from({ length: totalPages }, (_, index) => index + 1).slice(Math.max(0, currentPage - 3), Math.max(5, currentPage + 2)).map((page) => (
-              <a key={page} className={page === currentPage ? 'is-active' : ''} href={libraryHref(page)} onClick={(event) => follow(event, libraryHref(page))}>{page}</a>
+              <a key={page} className={page === currentPage ? 'is-active' : ''} href={localizedSitePath(libraryHref(page), locale)} onClick={(event) => follow(event, libraryHref(page))}>{page}</a>
             ))}
           </div>
-          <a className={currentPage >= totalPages ? 'is-disabled' : ''} href={libraryHref(Math.min(totalPages, currentPage + 1))} onClick={(event) => currentPage < totalPages && follow(event, libraryHref(currentPage + 1))}>{t('Дальше', 'Next')}</a>
+          <a className={currentPage >= totalPages ? 'is-disabled' : ''} href={localizedSitePath(libraryHref(Math.min(totalPages, currentPage + 1)), locale)} onClick={(event) => currentPage < totalPages && follow(event, libraryHref(currentPage + 1))}>{t('Дальше', 'Next')}</a>
         </nav>
       )}
     </main>
@@ -1911,9 +1932,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.lang = locale;
     const url = new URL(window.location.href);
-    if (locale === 'en' || locale === 'sr') url.searchParams.set('lang', locale);
-    else url.searchParams.delete('lang');
-    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    url.searchParams.delete('lang');
+    const logicalPath = `${splitLocalizedPath(url.pathname).routePath}${url.search}${url.hash}`;
+    window.history.replaceState({}, '', localizedSitePath(logicalPath, locale));
+    setLocationKey(`${window.location.pathname}${window.location.search}`);
   }, [locale]);
 
   useEffect(() => {
@@ -1972,13 +1994,14 @@ export default function App() {
 
   const applyBrowserLocation = () => {
     const route = readBrowserRoute();
+    if (route.locale) setLocaleState(route.locale);
     setPage(route.page);
     setPublicVideoSlug(route.videoSlug);
     setLocationKey(`${window.location.pathname}${window.location.search}`);
   };
 
   const navigate = (href, { replace = false } = {}) => {
-    window.history[replace ? 'replaceState' : 'pushState']({}, '', href);
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', localizedSitePath(href, locale));
     applyBrowserLocation();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -2354,7 +2377,7 @@ export default function App() {
       <footer>
         <span>{locale === 'en' ? 'ČITAVUK DICTIONARY, 2026' : locale === 'sr' ? 'ČITAVUK-REČNIK, 2026' : 'ЧИТАВУК-РЕЧНИК, 2026'}</span>
         <span>{locale === 'en' ? 'Created by Denis Kornilov with Gpt Sol 5.6' : locale === 'sr' ? 'Autor sajta: Denis Kornilov uz Gpt Sol 5.6' : 'Автор сайта: Денис Корнилов (вместе с Gpt Sol 5.6)'}</span>
-        <nav aria-label={locale === 'en' ? 'Footer navigation' : locale === 'sr' ? 'Navigacija u podnožju' : 'Навигация в подвале'}><a href="/" onClick={(event) => { event.preventDefault(); goHome(); }}>{locale === 'en' ? 'Create subtitles' : locale === 'sr' ? 'Napravi titlove' : 'Создать субтитры'}</a><a href="/subtitles" onClick={(event) => { event.preventDefault(); openLibrary(); }}>{locale === 'en' ? 'Library' : locale === 'sr' ? 'Biblioteka' : 'Библиотека'}</a><a href="/sitemap.xml">{locale === 'en' ? 'Sitemap' : locale === 'sr' ? 'Mapa sajta' : 'Карта сайта'}</a></nav>
+        <nav aria-label={locale === 'en' ? 'Footer navigation' : locale === 'sr' ? 'Navigacija u podnožju' : 'Навигация в подвале'}><a href={localizedSitePath('/', locale)} onClick={(event) => { event.preventDefault(); goHome(); }}>{locale === 'en' ? 'Create subtitles' : locale === 'sr' ? 'Napravi titlove' : 'Создать субтитры'}</a><a href={localizedSitePath('/subtitles', locale)} onClick={(event) => { event.preventDefault(); openLibrary(); }}>{locale === 'en' ? 'Library' : locale === 'sr' ? 'Biblioteka' : 'Библиотека'}</a><a href="/sitemap.xml">{locale === 'en' ? 'Sitemap' : locale === 'sr' ? 'Mapa sajta' : 'Карта сайта'}</a></nav>
         <a href="https://t.me/ivanlindgren" target="_blank" rel="noreferrer">{locale === 'en' ? 'Questions: @ivanlindgren' : locale === 'sr' ? 'Pitanja: @ivanlindgren' : 'По вопросам: @ivanlindgren'}</a>
         <button onClick={() => setWelcomeOpen(true)}><CircleHelp size={14} /> {locale === 'en' ? 'How it works' : locale === 'sr' ? 'Kako radi' : 'Как это работает'}</button>
         <button onClick={() => setSupportOpen(true)}><LifeBuoy size={14} /> {locale === 'en' ? 'Technical support' : locale === 'sr' ? 'Tehnička podrška' : 'Техническая поддержка'}</button>

@@ -224,6 +224,20 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
+  const isPageRequest = (req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api/');
+  const legacyLocale = String(req.query?.lang || '').toLowerCase();
+  if (!isPageRequest || !['en', 'sr'].includes(legacyLocale)) return next();
+  const cleanPath = req.path === '/' ? '/' : req.path.replace(/\/+$/, '');
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query || {})) {
+    if (key === 'lang') continue;
+    for (const item of Array.isArray(value) ? value : [value]) params.append(key, String(item));
+  }
+  const localizedPath = `/${legacyLocale}${cleanPath === '/' ? '/' : cleanPath}`;
+  return res.redirect(301, `${localizedPath}${params.size ? `?${params}` : ''}`);
+});
+
+app.use((req, res, next) => {
   const origin = req.get('origin');
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
@@ -801,8 +815,8 @@ function publicationRateLimited(ip) {
 
 function announcePublicPage(metadata) {
   notifyIndexNow([
-    metadata.pageUrl,
-    `https://${canonicalHost}/subtitles`,
+    ...localizedPublicUrls(metadata.slug),
+    ...seoLocales.map((locale) => `https://${canonicalHost}${localizedSeoPath('/subtitles', locale)}`),
     `https://${canonicalHost}/sitemap.xml`,
   ]).catch((error) => console.warn(`[indexnow] Не удалось отправить новую публикацию: ${error.message}`));
 }
@@ -1236,8 +1250,8 @@ app.post(
       }));
 
       notifyIndexNow([
-        metadata.pageUrl,
-        `https://${canonicalHost}/subtitles`,
+        ...localizedPublicUrls(metadata.slug),
+        ...seoLocales.map((locale) => `https://${canonicalHost}${localizedSeoPath('/subtitles', locale)}`),
         `https://${canonicalHost}/sitemap.xml`,
       ]).catch((error) => console.warn(`[indexnow] Не удалось отправить новую публикацию: ${error.message}`));
 
@@ -2744,19 +2758,50 @@ function jsonLdScript(value) {
   return `<script type="application/ld+json">${JSON.stringify(value).replace(/</g, '\\u003c')}</script>`;
 }
 
-async function renderSeoHtml({ title, description, canonicalPath, type = 'website', image, video, structuredData, content, robots = 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1' }) {
+const seoLocales = ['ru', 'en', 'sr'];
+const seoLocaleMeta = {
+  ru: { html: 'ru', og: 'ru_RU', siteName: 'Читавук-речник' },
+  en: { html: 'en', og: 'en_US', siteName: 'Čitavuk Dictionary' },
+  sr: { html: 'sr', og: 'sr_RS', siteName: 'Čitavuk-rečnik' },
+};
+
+function localizedSeoPath(value = '/', locale = 'ru') {
+  const url = new URL(value, `https://${canonicalHost}`);
+  const routePath = url.pathname.replace(/^\/(?:en|sr)(?=\/|$)/, '') || '/';
+  const pathname = locale === 'ru' ? routePath : `/${locale}${routePath === '/' ? '/' : routePath}`;
+  return `${pathname}${url.search}`;
+}
+
+function alternateSeoLinks(logicalPath) {
+  const links = seoLocales.map((locale) => (
+    `<link rel="alternate" hreflang="${locale}" href="https://${canonicalHost}${escapeHtml(localizedSeoPath(logicalPath, locale))}" />`
+  ));
+  links.push(`<link rel="alternate" hreflang="x-default" href="https://${canonicalHost}${escapeHtml(localizedSeoPath(logicalPath, 'en'))}" />`);
+  return links.join('\n    ');
+}
+
+function localizedPublicUrls(slug) {
+  const logicalPath = `/subtitles/${encodeURIComponent(slug)}`;
+  return seoLocales.map((locale) => `https://${canonicalHost}${localizedSeoPath(logicalPath, locale)}`);
+}
+
+async function renderSeoHtml({ title, description, canonicalPath, logicalPath = canonicalPath, locale = 'ru', type = 'website', image, video, structuredData, content, robots = 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1' }) {
   const canonicalUrl = `https://${canonicalHost}${canonicalPath}`;
+  const localeMeta = seoLocaleMeta[locale] || seoLocaleMeta.ru;
   let html = await readFile(path.join(clientPath, 'index.html'), 'utf8');
   const safeTitle = escapeHtml(title);
   const safeDescription = escapeHtml(description);
   html = html
+    .replace(/<html lang="[^"]*">/i, `<html lang="${localeMeta.html}">`)
     .replace(/<title>[\s\S]*?<\/title>/i, `<title>${safeTitle}</title>`)
     .replace(/<meta name="description"[^>]*>/i, `<meta name="description" content="${safeDescription}" />`)
     .replace(/<meta name="robots"[^>]*>/i, `<meta name="robots" content="${escapeHtml(robots)}" />`)
     .replace(/<link rel="canonical"[^>]*>/i, `<link rel="canonical" href="${escapeHtml(canonicalUrl)}" />`)
-    .replace(/<link rel="alternate" hreflang="ru"[^>]*>/i, `<link rel="alternate" hreflang="ru" href="${escapeHtml(canonicalUrl)}" />`)
-    .replace(/<link rel="alternate" hreflang="x-default"[^>]*>/i, `<link rel="alternate" hreflang="x-default" href="${escapeHtml(canonicalUrl)}" />`)
+    .replace(/\s*<link rel="alternate" hreflang="(?:ru|en|sr|x-default)"[^>]*>/gi, '')
+    .replace('</head>', `    ${alternateSeoLinks(logicalPath)}\n  </head>`)
     .replace(/<meta property="og:type"[^>]*>/i, `<meta property="og:type" content="${escapeHtml(type)}" />`)
+    .replace(/<meta property="og:locale"[^>]*>/i, `<meta property="og:locale" content="${localeMeta.og}" />`)
+    .replace(/<meta property="og:site_name"[^>]*>/i, `<meta property="og:site_name" content="${escapeHtml(localeMeta.siteName)}" />`)
     .replace(/<meta property="og:title"[^>]*>/i, `<meta property="og:title" content="${safeTitle}" />`)
     .replace(/<meta property="og:description"[^>]*>/i, `<meta property="og:description" content="${safeDescription}" />`)
     .replace(/<meta property="og:url"[^>]*>/i, `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`)
@@ -2774,7 +2819,7 @@ async function renderSeoHtml({ title, description, canonicalPath, type = 'websit
     structuredData ? jsonLdScript(structuredData) : '',
   ].filter(Boolean).join('\n    ');
   html = html.replace('</head>', `    ${extraMeta}\n  </head>`);
-  html = html.replace(/<div id="root">[\s\S]*?<\/div>\s*<script type="module"/i, `<div id="root">${content}</div>\n    <script type="module"`);
+  html = html.replace(/<div id="root">[\s\S]*?<\/div>/i, `<div id="root">${content}</div>`);
   return html;
 }
 
@@ -2782,10 +2827,119 @@ function publicVideoDescription(item) {
   return String(item.description || `${item.title} — видео с синхронными сербскими субтитрами и полным текстом реплик.`).trim().slice(0, 260);
 }
 
-app.get('/library', (_req, res) => res.redirect(301, '/subtitles'));
+const landingSeoCopy = {
+  ru: {
+    title: 'Сербские субтитры для видео онлайн — Читавук-речник',
+    description: 'Создавайте синхронные сербские субтитры из видео на русском, английском и других языках, экспортируйте SRT, VTT или MP4 и собирайте личный словарь.',
+    nav: 'Основная навигация',
+    create: 'Создать субтитры',
+    library: 'Публичная библиотека',
+    heading: 'Сербские субтитры для видео на любом языке',
+    lead: 'Читавук-речник распознаёт речь в русском, английском, сербском и других видео, переводит текст на сербский язык и сохраняет точные таймкоды.',
+    subheading: 'Создание и сохранение субтитров онлайн',
+    body: 'Готовые сербские субтитры можно смотреть вместе с видео, скачать в форматах SRT и VTT или встроить непосредственно в MP4.',
+    dictionaryHeading: 'Личный словарь по каждому видео',
+    dictionary: 'Во время просмотра можно нажимать на незнакомые слова, получать русский и английский перевод и сохранять их в Читавук-речник.',
+  },
+  en: {
+    title: 'Serbian subtitles for any video online — Čitavuk Dictionary',
+    description: 'Create synchronized Serbian subtitles from videos in English, Russian and other languages, export SRT, VTT or MP4, and build a personal vocabulary.',
+    nav: 'Main navigation',
+    create: 'Create subtitles',
+    library: 'Public library',
+    heading: 'Create Serbian subtitles for videos in any language',
+    lead: 'Čitavuk recognizes speech in English, Russian, Serbian and other languages, translates it into natural Serbian, and preserves precise timestamps.',
+    subheading: 'Create and export Serbian subtitles online',
+    body: 'Watch synchronized subtitles with the video, download SRT or VTT files, or embed the subtitles directly into an MP4.',
+    dictionaryHeading: 'A personal vocabulary for every video',
+    dictionary: 'Select unfamiliar Serbian words while watching, see Russian and English translations, and save them to your Čitavuk Dictionary.',
+  },
+  sr: {
+    title: 'Srpski titlovi za svaki video onlajn — Čitavuk-rečnik',
+    description: 'Napravite sinhronizovane srpske titlove za video na engleskom, ruskom i drugim jezicima, izvezite SRT, VTT ili MP4 i sačuvajte nove reči.',
+    nav: 'Glavna navigacija',
+    create: 'Napravi titlove',
+    library: 'Javna biblioteka',
+    heading: 'Napravite srpske titlove za video na bilo kom jeziku',
+    lead: 'Čitavuk prepoznaje govor na engleskom, ruskom, srpskom i drugim jezicima, prevodi ga na prirodan srpski i čuva precizne vremenske oznake.',
+    subheading: 'Pravljenje i izvoz srpskih titlova onlajn',
+    body: 'Gledajte sinhronizovane titlove uz video, preuzmite SRT ili VTT ili ugradite titlove direktno u MP4.',
+    dictionaryHeading: 'Lični rečnik za svaki video',
+    dictionary: 'Tokom gledanja izaberite nepoznatu srpsku reč, pogledajte ruski i engleski prevod i sačuvajte je u Čitavuk-rečnik.',
+  },
+};
 
-app.get('/subtitles', async (req, res) => {
+const seoCategoryLabels = {
+  фильм: { ru: 'Фильмы', en: 'Films', sr: 'Filmovi' },
+  мультфильм: { ru: 'Мультфильмы', en: 'Animation', sr: 'Crtani filmovi' },
+  блог: { ru: 'Блоги', en: 'Blogs', sr: 'Blogovi' },
+  интервью: { ru: 'Интервью', en: 'Interviews', sr: 'Intervjui' },
+  новости: { ru: 'Новости', en: 'News', sr: 'Vesti' },
+  обучение: { ru: 'Обучающие видео', en: 'Learning videos', sr: 'Obrazovni video-snimci' },
+  другое: { ru: 'Другие видео', en: 'Other videos', sr: 'Drugi video-snimci' },
+};
+
+async function sendLandingSeo(req, res, locale) {
+  const copy = landingSeoCopy[locale];
+  const logicalPath = '/';
+  const canonicalPath = localizedSeoPath(logicalPath, locale);
+  const content = `<main class="seo-fallback"><nav aria-label="${escapeHtml(copy.nav)}"><a href="${escapeHtml(localizedSeoPath('/', locale))}">${escapeHtml(copy.create)}</a> · <a href="${escapeHtml(localizedSeoPath('/subtitles', locale))}">${escapeHtml(copy.library)}</a></nav><h1>${escapeHtml(copy.heading)}</h1><p>${escapeHtml(copy.lead)}</p><h2>${escapeHtml(copy.subheading)}</h2><p>${escapeHtml(copy.body)}</p><h2>${escapeHtml(copy.dictionaryHeading)}</h2><p>${escapeHtml(copy.dictionary)}</p></main>`;
+  const structuredData = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: seoLocaleMeta[locale].siteName,
+    alternateName: 'Serbian Subtitles',
+    url: `https://${canonicalHost}${canonicalPath}`,
+    description: copy.description,
+    applicationCategory: 'EducationalApplication',
+    operatingSystem: 'Web',
+    inLanguage: locale,
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'EUR' },
+  };
+  return res.type('html').send(await renderSeoHtml({
+    title: copy.title,
+    description: copy.description,
+    canonicalPath,
+    logicalPath,
+    locale,
+    image: `https://${canonicalHost}/assets/citavuk-guide.webp`,
+    structuredData,
+    content,
+  }));
+}
+
+app.get('/', (req, res) => sendLandingSeo(req, res, 'ru'));
+app.get(['/en', '/en/'], (req, res) => sendLandingSeo(req, res, 'en'));
+app.get(['/sr', '/sr/'], (req, res) => sendLandingSeo(req, res, 'sr'));
+
+app.get('/library', (_req, res) => res.redirect(301, '/subtitles'));
+app.get('/en/library', (_req, res) => res.redirect(301, '/en/subtitles'));
+app.get('/sr/library', (_req, res) => res.redirect(301, '/sr/subtitles'));
+
+async function sendLibrarySeo(req, res, locale = 'ru') {
   try {
+    const copy = locale === 'en' ? {
+      home: 'Home', library: 'Subtitle library', back: 'Previous', next: 'Next',
+      heading: 'Public library of videos with Serbian subtitles',
+      lead: 'Watch films, animation, blogs and learning videos with synchronized Serbian subtitles. Every publication has its own page with a full transcript.',
+      empty: 'New publications will appear soon.',
+      description: 'A public library of films, animation, blogs and learning videos with synchronized Serbian subtitles and full transcripts.',
+      pages: 'Library pages',
+    } : locale === 'sr' ? {
+      home: 'Početna', library: 'Biblioteka titlova', back: 'Prethodna', next: 'Sledeća',
+      heading: 'Javna biblioteka video-snimaka sa srpskim titlovima',
+      lead: 'Gledajte filmove, crtane filmove, blogove i obrazovne video-snimke sa sinhronizovanim srpskim titlovima. Svaka publikacija ima posebnu stranicu sa potpunim transkriptom.',
+      empty: 'Nove publikacije uskoro stižu.',
+      description: 'Javna biblioteka filmova, crtanih filmova, blogova i obrazovnih video-snimaka sa sinhronizovanim srpskim titlovima i transkriptima.',
+      pages: 'Stranice biblioteke',
+    } : {
+      home: 'Главная', library: 'Библиотека субтитров', back: 'Назад', next: 'Дальше',
+      heading: 'Публичная библиотека видео с сербскими субтитрами',
+      lead: 'Смотрите фильмы, мультфильмы, блоги и учебные видео с синхронными сербскими субтитрами. Каждая публикация открывается на отдельной странице вместе с полным текстом реплик.',
+      empty: 'Новые публикации скоро появятся.',
+      description: 'Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.',
+      pages: 'Страницы библиотеки',
+    };
     const requestedPage = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
     const requestedCategory = String(req.query.category || '').trim().toLocaleLowerCase('ru');
     const category = publicCategories.has(requestedCategory) ? requestedCategory : '';
@@ -2802,33 +2956,41 @@ app.get('/subtitles', async (req, res) => {
     };
     const links = items.map((item) => `
       <article>
-        <h2><a href="/subtitles/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></h2>
+        <h2><a href="${escapeHtml(localizedSeoPath(`/subtitles/${encodeURIComponent(item.slug)}`, locale))}">${escapeHtml(item.title)}</a></h2>
         <p>${escapeHtml(publicVideoDescription(item))}</p>
       </article>`).join('');
     const pageLinks = Array.from({ length: totalPages }, (_, index) => index + 1)
-      .map((number) => number === page ? `<strong>${number}</strong>` : `<a href="${escapeHtml(pageHref(number))}">${number}</a>`)
+      .map((number) => number === page ? `<strong>${number}</strong>` : `<a href="${escapeHtml(localizedSeoPath(pageHref(number), locale))}">${number}</a>`)
       .join(' · ');
-    const pagination = totalPages > 1 ? `<nav aria-label="Страницы библиотеки">${page > 1 ? `<a href="${escapeHtml(pageHref(page - 1))}">Назад</a> · ` : ''}${pageLinks}${page < totalPages ? ` · <a href="${escapeHtml(pageHref(page + 1))}">Дальше</a>` : ''}</nav>` : '';
-    const heading = category ? `${category[0].toLocaleUpperCase('ru')}${category.slice(1)} с сербскими субтитрами` : 'Публичная библиотека видео с сербскими субтитрами';
-    const title = `${heading}${page > 1 ? ` — страница ${page}` : ''}`;
-    const canonicalPath = pageHref(page);
-    const content = `<main class="seo-fallback"><nav aria-label="Хлебные крошки"><a href="/">Главная</a> → <a href="/subtitles">Библиотека субтитров</a>${category ? ` → ${escapeHtml(category)}` : ''}</nav><h1>${escapeHtml(heading)}</h1><p>Смотрите фильмы, мультфильмы, блоги и учебные видео с синхронными сербскими субтитрами. Каждая публикация открывается на отдельной странице вместе с полным текстом реплик.</p>${links || '<p>Новые публикации скоро появятся.</p>'}${pagination}</main>`;
+    const pagination = totalPages > 1 ? `<nav aria-label="${escapeHtml(copy.pages)}">${page > 1 ? `<a href="${escapeHtml(localizedSeoPath(pageHref(page - 1), locale))}">${escapeHtml(copy.back)}</a> · ` : ''}${pageLinks}${page < totalPages ? ` · <a href="${escapeHtml(localizedSeoPath(pageHref(page + 1), locale))}">${escapeHtml(copy.next)}</a>` : ''}</nav>` : '';
+    const categoryLabel = category ? (seoCategoryLabels[category]?.[locale] || category) : '';
+    const heading = categoryLabel
+      ? (locale === 'en' ? `${categoryLabel} with Serbian subtitles` : locale === 'sr' ? `${categoryLabel} sa srpskim titlovima` : `${categoryLabel} с сербскими субтитрами`)
+      : copy.heading;
+    const pageSuffix = page > 1 ? (locale === 'en' ? ` — page ${page}` : locale === 'sr' ? ` — stranica ${page}` : ` — страница ${page}`) : '';
+    const title = `${heading}${pageSuffix}`;
+    const logicalPath = pageHref(page);
+    const canonicalPath = localizedSeoPath(logicalPath, locale);
+    const content = `<main class="seo-fallback"><nav aria-label="${escapeHtml(copy.pages)}"><a href="${escapeHtml(localizedSeoPath('/', locale))}">${escapeHtml(copy.home)}</a> → <a href="${escapeHtml(localizedSeoPath('/subtitles', locale))}">${escapeHtml(copy.library)}</a>${category ? ` → ${escapeHtml(category)}` : ''}</nav><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(copy.lead)}</p>${links || `<p>${escapeHtml(copy.empty)}</p>`}${pagination}</main>`;
     const structuredData = {
       '@context': 'https://schema.org',
       '@type': 'CollectionPage',
       name: heading,
       url: `https://${canonicalHost}${canonicalPath}`,
-      description: 'Открытая библиотека видео с синхронными сербскими субтитрами и текстом реплик.',
-      hasPart: items.map((item) => ({ '@type': 'VideoObject', name: item.title, url: item.pageUrl })),
+      description: copy.description,
+      inLanguage: locale,
+      hasPart: items.map((item) => ({ '@type': 'VideoObject', name: item.title, url: `https://${canonicalHost}${localizedSeoPath(`/subtitles/${encodeURIComponent(item.slug)}`, locale)}` })),
     };
     const linkHeaders = [];
-    if (page > 1) linkHeaders.push(`<https://${canonicalHost}${pageHref(page - 1)}>; rel="prev"`);
-    if (page < totalPages) linkHeaders.push(`<https://${canonicalHost}${pageHref(page + 1)}>; rel="next"`);
+    if (page > 1) linkHeaders.push(`<https://${canonicalHost}${localizedSeoPath(pageHref(page - 1), locale)}>; rel="prev"`);
+    if (page < totalPages) linkHeaders.push(`<https://${canonicalHost}${localizedSeoPath(pageHref(page + 1), locale)}>; rel="next"`);
     if (linkHeaders.length) res.set('Link', linkHeaders.join(', '));
     return res.type('html').send(await renderSeoHtml({
       title,
-      description: 'Публичная библиотека фильмов, мультфильмов, блогов и учебных видео с синхронными сербскими субтитрами и текстом реплик.',
+      description: copy.description,
       canonicalPath,
+      logicalPath,
+      locale,
       image: `https://${canonicalHost}/assets/citavuk-guide.webp`,
       structuredData,
       content,
@@ -2837,28 +2999,55 @@ app.get('/subtitles', async (req, res) => {
     console.error('Не удалось подготовить SEO-страницу библиотеки:', error);
     return res.sendFile(path.join(clientPath, 'index.html'));
   }
-});
+}
 
-app.get('/subtitles/:slug', async (req, res) => {
+app.get('/subtitles', (req, res) => sendLibrarySeo(req, res, 'ru'));
+app.get('/en/subtitles', (req, res) => sendLibrarySeo(req, res, 'en'));
+app.get('/sr/subtitles', (req, res) => sendLibrarySeo(req, res, 'sr'));
+
+async function sendVideoSeo(req, res, locale = 'ru') {
   try {
+    const copy = locale === 'en' ? {
+      home: 'Home', library: 'Library', missing: 'Video not found',
+      missingText: 'The publication may have been removed. Return to the Serbian subtitle library.',
+      titleSuffix: 'Serbian subtitles', category: 'Category', duration: 'Duration', minutes: 'min',
+      transcript: 'Serbian video transcript',
+    } : locale === 'sr' ? {
+      home: 'Početna', library: 'Biblioteka', missing: 'Video nije pronađen',
+      missingText: 'Publikacija je možda uklonjena. Vratite se u biblioteku srpskih titlova.',
+      titleSuffix: 'srpski titlovi', category: 'Kategorija', duration: 'Trajanje', minutes: 'min',
+      transcript: 'Transkript videa na srpskom',
+    } : {
+      home: 'Главная', library: 'Библиотека', missing: 'Видео не найдено',
+      missingText: 'Возможно, публикация была удалена. Вернитесь в библиотеку сербских субтитров.',
+      titleSuffix: 'сербские субтитры', category: 'Категория', duration: 'Продолжительность', minutes: 'мин',
+      transcript: 'Текст видео на сербском языке',
+    };
     const item = await resolvePublicMetadata(req.params.slug);
     if (!item) {
-      const content = '<main class="seo-fallback"><h1>Видео не найдено</h1><p>Возможно, публикация была удалена. Вернитесь в <a href="/subtitles">библиотеку сербских субтитров</a>.</p></main>';
+      const logicalPath = `/subtitles/${encodeURIComponent(req.params.slug)}`;
+      const content = `<main class="seo-fallback"><h1>${escapeHtml(copy.missing)}</h1><p>${escapeHtml(copy.missingText)} <a href="${escapeHtml(localizedSeoPath('/subtitles', locale))}">${escapeHtml(copy.library)}</a>.</p></main>`;
       return res.status(404).type('html').send(await renderSeoHtml({
-        title: 'Видео не найдено — Читавук-речник',
-        description: 'Публикация не найдена.',
-        canonicalPath: req.path,
+        title: `${copy.missing} — ${seoLocaleMeta[locale].siteName}`,
+        description: copy.missingText,
+        canonicalPath: localizedSeoPath(logicalPath, locale),
+        logicalPath,
+        locale,
         robots: 'noindex, follow',
         content,
       }));
     }
-    if (/^[a-f0-9-]{36}$/i.test(req.params.slug)) return res.redirect(301, `/subtitles/${encodeURIComponent(item.slug)}`);
+    if (/^[a-f0-9-]{36}$/i.test(req.params.slug)) return res.redirect(301, localizedSeoPath(`/subtitles/${encodeURIComponent(item.slug)}`, locale));
 
     const description = publicVideoDescription(item);
     const shortTitle = item.title.length > 58 ? `${item.title.slice(0, 57).trim()}…` : item.title;
     const transcript = (item.segments || []).map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim();
-    const canonicalPath = `/subtitles/${encodeURIComponent(item.slug)}`;
-    const content = `<main class="seo-fallback seo-video-page"><nav aria-label="Хлебные крошки"><a href="/">Главная</a> → <a href="/subtitles">Библиотека</a> → ${escapeHtml(item.title)}</nav><h1>${escapeHtml(item.title)} — сербские субтитры</h1><p>${escapeHtml(description)}</p><p><strong>Категория:</strong> ${escapeHtml(item.category)}. <strong>Продолжительность:</strong> ${escapeHtml(Math.ceil((Number(item.duration) || 0) / 60))} мин.</p><h2>Текст видео на сербском языке</h2><p>${escapeHtml(transcript.slice(0, 5000))}</p></main>`;
+    const logicalPath = `/subtitles/${encodeURIComponent(item.slug)}`;
+    const canonicalPath = localizedSeoPath(logicalPath, locale);
+    const localizedPageUrl = `https://${canonicalHost}${canonicalPath}`;
+    const localizedLibraryUrl = `https://${canonicalHost}${localizedSeoPath('/subtitles', locale)}`;
+    const localizedCategory = seoCategoryLabels[item.category]?.[locale] || item.category;
+    const content = `<main class="seo-fallback seo-video-page"><nav aria-label="${escapeHtml(copy.library)}"><a href="${escapeHtml(localizedSeoPath('/', locale))}">${escapeHtml(copy.home)}</a> → <a href="${escapeHtml(localizedSeoPath('/subtitles', locale))}">${escapeHtml(copy.library)}</a> → ${escapeHtml(item.title)}</nav><h1>${escapeHtml(item.title)} — ${escapeHtml(copy.titleSuffix)}</h1><p>${escapeHtml(description)}</p><p><strong>${escapeHtml(copy.category)}:</strong> ${escapeHtml(localizedCategory)}. <strong>${escapeHtml(copy.duration)}:</strong> ${escapeHtml(Math.ceil((Number(item.duration) || 0) / 60))} ${escapeHtml(copy.minutes)}.</p><h2>${escapeHtml(copy.transcript)}</h2><p>${escapeHtml(transcript.slice(0, 5000))}</p></main>`;
     const structuredData = [
       {
         '@context': 'https://schema.org',
@@ -2869,7 +3058,7 @@ app.get('/subtitles/:slug', async (req, res) => {
         uploadDate: item.createdAt,
         duration: isoDuration(item.duration),
         contentUrl: item.videoUrl,
-        url: item.pageUrl,
+        url: localizedPageUrl,
         inLanguage: 'sr',
         transcript: transcript.slice(0, 5000),
       },
@@ -2877,16 +3066,18 @@ app.get('/subtitles/:slug', async (req, res) => {
         '@context': 'https://schema.org',
         '@type': 'BreadcrumbList',
         itemListElement: [
-          { '@type': 'ListItem', position: 1, name: 'Главная', item: `https://${canonicalHost}/` },
-          { '@type': 'ListItem', position: 2, name: 'Библиотека', item: `https://${canonicalHost}/subtitles` },
-          { '@type': 'ListItem', position: 3, name: item.title, item: item.pageUrl },
+          { '@type': 'ListItem', position: 1, name: copy.home, item: `https://${canonicalHost}${localizedSeoPath('/', locale)}` },
+          { '@type': 'ListItem', position: 2, name: copy.library, item: localizedLibraryUrl },
+          { '@type': 'ListItem', position: 3, name: item.title, item: localizedPageUrl },
         ],
       },
     ];
     return res.type('html').send(await renderSeoHtml({
-      title: `${shortTitle} — сербские субтитры`,
+      title: `${shortTitle} — ${copy.titleSuffix}`,
       description,
       canonicalPath,
+      logicalPath,
+      locale,
       type: 'video.other',
       image: item.thumbnailUrl,
       video: item.videoUrl,
@@ -2897,17 +3088,32 @@ app.get('/subtitles/:slug', async (req, res) => {
     console.error('Не удалось подготовить SEO-страницу видео:', error);
     return res.status(502).sendFile(path.join(clientPath, 'index.html'));
   }
-});
+}
+
+app.get('/subtitles/:slug', (req, res) => sendVideoSeo(req, res, 'ru'));
+app.get('/en/subtitles/:slug', (req, res) => sendVideoSeo(req, res, 'en'));
+app.get('/sr/subtitles/:slug', (req, res) => sendVideoSeo(req, res, 'sr'));
 
 app.get('/sitemap.xml', async (_req, res) => {
   try {
     const items = await listPublicMetadata();
-    const urls = [
-      `<url><loc>https://${canonicalHost}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>`,
-      `<url><loc>https://${canonicalHost}/subtitles</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`,
-      ...items.map((item) => `<url><loc>${escapeXml(item.pageUrl)}</loc><lastmod>${escapeXml(String(item.createdAt || '').slice(0, 10))}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority><video:video><video:thumbnail_loc>${escapeXml(item.thumbnailUrl)}</video:thumbnail_loc><video:title>${escapeXml(item.title)}</video:title><video:description>${escapeXml(publicVideoDescription(item))}</video:description><video:content_loc>${escapeXml(item.videoUrl)}</video:content_loc></video:video></url>`),
+    const alternates = (logicalPath) => [
+      ...seoLocales.map((locale) => `<xhtml:link rel="alternate" hreflang="${locale}" href="https://${canonicalHost}${escapeXml(localizedSeoPath(logicalPath, locale))}" />`),
+      `<xhtml:link rel="alternate" hreflang="x-default" href="https://${canonicalHost}${escapeXml(localizedSeoPath(logicalPath, 'en'))}" />`,
     ].join('');
-    return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">${urls}</urlset>\n`);
+    const standardUrl = (logicalPath, changefreq, priority) => seoLocales.map((locale) => (
+      `<url><loc>https://${canonicalHost}${escapeXml(localizedSeoPath(logicalPath, locale))}</loc>${alternates(logicalPath)}<changefreq>${changefreq}</changefreq><priority>${priority}</priority></url>`
+    ));
+    const videoUrls = items.flatMap((item) => {
+      const logicalPath = `/subtitles/${encodeURIComponent(item.slug)}`;
+      return seoLocales.map((locale) => `<url><loc>https://${canonicalHost}${escapeXml(localizedSeoPath(logicalPath, locale))}</loc>${alternates(logicalPath)}<lastmod>${escapeXml(String(item.createdAt || '').slice(0, 10))}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority><video:video><video:thumbnail_loc>${escapeXml(item.thumbnailUrl)}</video:thumbnail_loc><video:title>${escapeXml(item.title)}</video:title><video:description>${escapeXml(publicVideoDescription(item))}</video:description><video:content_loc>${escapeXml(item.videoUrl)}</video:content_loc></video:video></url>`);
+    });
+    const urls = [
+      ...standardUrl('/', 'weekly', '1.0'),
+      ...standardUrl('/subtitles', 'daily', '0.9'),
+      ...videoUrls,
+    ].join('');
+    return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">${urls}</urlset>\n`);
   } catch (error) {
     console.error('Не удалось построить Sitemap:', error);
     return res.status(503).type('text/plain').send('Sitemap temporarily unavailable');
